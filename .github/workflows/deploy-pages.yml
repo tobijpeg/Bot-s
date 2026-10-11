@@ -28,9 +28,9 @@ jobs:
       - name: Build static site
         env:
           VITE_BASE_PATH: /Bot-s/
-          VITE_API_BASE_URL: https://choir-consisting-aerospace-behavioral.trycloudflare.com
-          NEXT_PUBLIC_SUPABASE_URL: https://idoykvpepfyshepoafsy.supabase.co
-          NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: sb_publishable_GdH5Dtx8yIJolChu3_jjyg_M3FGkDdV
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL }}
+          VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
+          VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: |
           npm run build
           cp dist/index.html dist/404.html
