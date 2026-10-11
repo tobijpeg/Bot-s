@@ -1,0 +1,55 @@
+services:
+  bots-platform:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        NEXT_PUBLIC_SUPABASE_URL: ${SUPABASE_URL:-}
+        NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+    image: bots-kz-platform:latest
+    restart: unless-stopped
+    environment:
+      NODE_ENV: production
+      BOTSUITE_PORT: 4174
+      SUPABASE_URL: ${SUPABASE_URL:-}
+      SUPABASE_PUBLISHABLE_KEY: ${SUPABASE_PUBLISHABLE_KEY:-}
+      SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
+      BOT_TOKEN_ENCRYPTION_KEY: ${BOT_TOKEN_ENCRYPTION_KEY:-}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
+      OLLAMA_URL: http://ollama:11434
+      PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:-}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+    ports:
+      - "${APP_PORT:-4174}:4174"
+    volumes:
+      - platform_data:/app/.data
+    depends_on:
+      ollama-model:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4174/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+      start_period: 10s
+
+  ollama:
+    image: ollama/ollama:latest
+    restart: unless-stopped
+    entrypoint: ["ollama", "serve"]
+    volumes:
+      - ollama_models:/root/.ollama
+
+  ollama-model:
+    image: ollama/ollama:latest
+    restart: "no"
+    depends_on:
+      - ollama
+    environment:
+      OLLAMA_HOST: http://ollama:11434
+    entrypoint: ["/bin/sh", "-c"]
+    command: ["until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull ${OLLAMA_MODEL:-qwen3:4b}"]
+
+volumes:
+  platform_data:
+  ollama_models:
