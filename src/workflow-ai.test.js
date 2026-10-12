@@ -124,6 +124,7 @@ test("a one-choice booking menu is corrected into a direct main-menu branch", ()
   assert.ok(edgePairs.has("loyalty->review") && edgePairs.has("loyalty->news"), "existing review and news choices must remain");
   assert.ok(edgePairs.has("service->datetime") && edgePairs.has("datetime->client-details"));
   assert.ok(edgePairs.has("client-details->confirmation") && edgePairs.has("confirmation->contacts"));
+  assert.equal(result.workflow.nodes.find((node) => node.id === "service").data.text, "Напишите, какая услуга вам нужна.", "a free-text question must not promise an unavailable choice list");
   assert.ok(result.workflow.edges.every((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)));
 
   const repairedSavedFlow = applyWorkflowOperations(result.workflow, {

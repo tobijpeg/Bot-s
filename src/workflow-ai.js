@@ -4,6 +4,13 @@ import { randomBytes } from "node:crypto";
 const EDIT_REQUEST = /(?:добав|измени|помен|удал|убер|соедини|свяж|переимен|обнов|допол|перенес|отредактир)/iu;
 const NEW_WORKFLOW_REQUEST = /(?:с\s+нуля|нов(?:ый|ую|ое|ого)\s+(?:сценар|структур|бот))/iu;
 
+function normalizeQuestionText(text) {
+  const value = String(text || "").slice(0, 1000);
+  const hasChoices = /(?:^|\n)\s*(?:[•*-]|\d+[.)])\s*\S/m.test(value);
+  if (!hasChoices && /выберите.{0,60}(?:из списка|услуг(?:у|и))/iu.test(value)) return "Напишите, какая услуга вам нужна.";
+  return value;
+}
+
 export function isWorkflowCreationRequest(question) {
   const text = String(question || "").trim();
   if (NEW_WORKFLOW_REQUEST.test(text)) return true;
@@ -58,7 +65,9 @@ export function applyWorkflowOperations(baseWorkflow, generated, { wantsDocument
     let changed = false;
     for (const field of ["title", "text", "buttonLabel", "keywords"]) {
       if (typeof update[field] === "string" && update[field] && update[field] !== node.data[field]) {
-        node.data[field] = update[field].slice(0, field === "text" ? 1000 : 250);
+        node.data[field] = field === "text" && node.data.kind === "question"
+          ? normalizeQuestionText(update[field])
+          : update[field].slice(0, field === "text" ? 1000 : 250);
         changed = true;
       }
     }
@@ -92,7 +101,7 @@ export function applyWorkflowOperations(baseWorkflow, generated, { wantsDocument
       data: {
         kind: node.kind,
         title: String(node.title || nodeKinds[node.kind].title).slice(0, 100),
-        text: String(node.text || "").slice(0, 1000),
+        text: node.kind === "question" ? normalizeQuestionText(node.text) : String(node.text || "").slice(0, 1000),
         buttonLabel: String(node.buttonLabel || node.title || "").slice(0, 60),
         keywords: String(node.keywords || "").slice(0, 250),
       },
@@ -174,6 +183,7 @@ export function applyWorkflowOperations(baseWorkflow, generated, { wantsDocument
   if (!nodes.some((node) => node.data.kind === "start") || !nodes.some((node) => node.data.kind === "fallback")) {
     throw new Error("В схеме должны оставаться блоки /start и ответа по умолчанию.");
   }
+  for (const node of nodes) if (node.data.kind === "question") node.data.text = normalizeQuestionText(node.data.text);
   return {
     workflow: { nodes, edges },
     addedCount: Math.max(0, nodes.length - baseNodes.length),
