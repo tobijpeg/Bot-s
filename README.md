@@ -35,7 +35,9 @@ Copy-Item .env.docker.example .env
 notepad .env
 ```
 
-В `.env` заполните `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` и `BOT_TOKEN_ENCRYPTION_KEY`. Для последнего создайте ключ командой `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` и сохраните значение в `.env`. Замените `APP_PORT=4174` на `BOTSUITE_PORT=4174`. Оставьте `PUBLIC_APP_ORIGIN=https://tobijpeg.github.io`; `OLLAMA_URL` не задавайте, если ИИ не нужен. Не отправляйте содержимое `.env` в чат и не добавляйте его в GitHub.
+В `.env` заполните `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` и `BOT_TOKEN_ENCRYPTION_KEY`. Для последнего создайте ключ командой `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` и сохраните значение в `.env`. Замените `APP_PORT=4174` на `BOTSUITE_PORT=4174`. Оставьте `PUBLIC_APP_ORIGIN=https://tobijpeg.github.io`. Не отправляйте содержимое `.env` в чат и не добавляйте его в GitHub.
+
+Если на этом компьютере уже установлен Ollama, проверьте модель командой `ollama list` и адрес командой `Invoke-RestMethod http://localhost:11434/api/tags`. В `.env` укажите `OLLAMA_URL=http://127.0.0.1:11434` и `OLLAMA_MODEL` с точным именем модели из списка. Если установлена `qwen3:4b`, оставьте это значение. Ollama и Node.js-сервер должны работать на одном компьютере; порт Ollama не публикуйте в интернет. После изменения `.env` перезапустите `npm start`.
 
 Запустите API и оставьте это окно PowerShell открытым:
 
