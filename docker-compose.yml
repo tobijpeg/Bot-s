@@ -19,6 +19,7 @@ services:
       OLLAMA_URL: ${OLLAMA_URL:-}
       PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_EMAILS: ${ADMIN_EMAILS:-}
     ports:
       - "${APP_PORT:-4174}:4174"
     volumes:

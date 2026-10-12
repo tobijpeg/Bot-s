@@ -12,6 +12,7 @@ import { createReadStream } from "node:fs";
 import { createWorkflowRuntime, isValidTelegramChatId } from "./src/workflow-runtime.js";
 import { deliverInboxReply, InboxReplyError } from "./src/inbox-delivery.js";
 import { applyTelegramProfile, normalizeTelegramProfile } from "./src/telegram-profile.js";
+import { configuredAdminEmails, isConfiguredAdmin } from "./src/admin-access.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: join(root, ".env") });
@@ -440,14 +441,12 @@ const server = createServer(async (req, res) => {
     }
     if (req.method === "GET" && url.pathname === "/api/admin/check") {
       const user = await supabaseUserFromRequest(req); if (!user) return response(res, 401, { error: "Войдите в аккаунт." });
-      const adminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-      return response(res, 200, { isAdmin: Boolean(adminEmail) && String(user.email || "").trim().toLowerCase() === adminEmail });
+      return response(res, 200, { isAdmin: isConfiguredAdmin(user.email, process.env) });
     }
     if (req.method === "GET" && url.pathname === "/api/admin/onboarding") {
       const user = await supabaseUserFromRequest(req); if (!user) return response(res, 401, { error: "Войдите в аккаунт." });
-      const adminEmail = String(process.env.ADMIN_EMAIL || "").trim().toLowerCase();
-      if (!adminEmail) return response(res, 503, { error: "Администратор платформы ещё не настроен на сервере." });
-      if (String(user.email || "").trim().toLowerCase() !== adminEmail) return response(res, 403, { error: "Этот раздел доступен только администратору платформы." });
+      if (configuredAdminEmails(process.env).length === 0) return response(res, 503, { error: "Администратор платформы ещё не настроен на сервере." });
+      if (!isConfiguredAdmin(user.email, process.env)) return response(res, 403, { error: "Этот раздел доступен только администратору платформы." });
       const rows = await serviceRestCall("onboarding_responses", "?select=user_id,email,persona,industry,purpose,planned_use,will_develop,desired_features,notes,skipped,created_at,updated_at&order=updated_at.desc&limit=500");
       return response(res, 200, { responses: rows });
     }
