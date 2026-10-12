@@ -125,6 +125,15 @@ test("a one-choice booking menu is corrected into a direct main-menu branch", ()
   assert.ok(edgePairs.has("service->datetime") && edgePairs.has("datetime->client-details"));
   assert.ok(edgePairs.has("client-details->confirmation") && edgePairs.has("confirmation->contacts"));
   assert.ok(result.workflow.edges.every((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)));
+
+  const repairedSavedFlow = applyWorkflowOperations(result.workflow, {
+    addNodes: [], updateNodes: [], removeNodes: [], removeEdges: [], edges: [],
+  });
+  const repairedNodeIds = new Set(repairedSavedFlow.workflow.nodes.map((node) => node.id));
+  const repairedEdges = new Set(repairedSavedFlow.workflow.edges.map((edge) => `${edge.source}->${edge.target}`));
+  assert.ok(!repairedNodeIds.has("appointment-menu"), "a previously saved misplaced one-button menu should also be repairable");
+  assert.ok(repairedEdges.has("loyalty->service"));
+  assert.ok(repairedEdges.has("loyalty->review") && repairedEdges.has("loyalty->news"));
 });
 
 test("requested removals prune dangling connections but preserve start and fallback", () => {

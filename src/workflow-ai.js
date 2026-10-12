@@ -125,7 +125,12 @@ export function applyWorkflowOperations(baseWorkflow, generated, { wantsDocument
   const primaryMenu = baseNodes.map((node) => nodeById.get(node.id)).find((node) => node?.data?.kind === "menu")
     || nodes.find((node) => node.data.kind === "menu");
   if (primaryMenu) {
-    for (const nodeId of [...addedIds]) {
+    const misplacedActionMenuIds = nodes
+      .filter((node) => node.id !== primaryMenu.id && node.data.kind === "menu"
+        && /(?:запис|брон|заявк|заказ|оплат|купить|услуг)/iu.test(`${node.data.title} ${node.data.buttonLabel}`)
+        && edges.some((edge) => edge.target === node.id && nodeById.get(edge.source)?.data?.kind === "subscribe"))
+      .map((node) => node.id);
+    for (const nodeId of new Set([...addedIds, ...misplacedActionMenuIds])) {
       const actionMenu = nodeById.get(nodeId);
       if (!actionMenu || actionMenu.data.kind !== "menu" || !/(?:запис|брон|заявк|заказ|оплат|купить|услуг)/iu.test(`${actionMenu.data.title} ${actionMenu.data.buttonLabel}`)) continue;
       const outgoing = edges.filter((edge) => edge.source === nodeId);
