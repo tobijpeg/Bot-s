@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createDefaultWorkflow, workflowPresets } from "./workflow.js";
-import { applyWorkflowOperations, createBuilderBaseline, isWorkflowCreationRequest } from "./workflow-ai.js";
+import { applyWorkflowOperations, createBuilderBaseline, getWorkflowClarificationQuestions, isWorkflowCreationRequest, normalizeGeneratedNode } from "./workflow-ai.js";
 
 const block = (id, kind, title, text, buttonLabel = title) => ({ id, kind, title, text, buttonLabel, keywords: "" });
 
@@ -13,7 +13,60 @@ test("creation requests start from a clean personal flow while explicit edits ke
   const baseline = createBuilderBaseline("Добро пожаловать в мастерскую.");
   assert.equal(baseline.nodes.length, 4);
   assert.ok(baseline.nodes.some((node) => node.id === "welcome" && node.data.text.includes("мастерскую")));
+  assert.match(baseline.nodes.find((node) => node.id === "menu").data.text, /чем мы можем помочь/iu);
+  assert.ok(baseline.nodes.find((node) => node.id === "menu").data.buttonLabel);
   assert.ok(!baseline.nodes.some((node) => ["catalog", "booking"].includes(node.data.kind)), "the clean starting flow must not contain demo-shop behavior");
+});
+
+test("clarifying questions are personalized to a barbershop and cover the actual booking flow", () => {
+  const questions = getWorkflowClarificationQuestions("Сделай бота для записи клиентов", {
+    businessName: "Barber House",
+    description: "Барбершоп в Астане",
+  });
+  assert.equal(questions.length, 2);
+  assert.match(questions[0], /услуг/iu);
+  assert.match(questions[1], /телефон|дат/iu);
+  assert.ok(questions.every((question) => !/разработчик|тестировщик|сценарий|JSON/iu.test(question)));
+});
+
+test("clarifying questions for a cafe ask about orders and guest details rather than generic setup", () => {
+  const questions = getWorkflowClarificationQuestions("Нужен бот для кафе и доставки", { businessName: "Кофе рядом" });
+  assert.match(questions[0], /заказ|блюд/iu);
+  assert.match(questions[1], /телефон|адрес|врем/iu);
+});
+
+test("clarifying questions for education focus on student goals and intake details", () => {
+  const questions = getWorkflowClarificationQuestions("Создай бота для онлайн-курса английского");
+  assert.match(questions[0], /обуч|ученик|ученик|курс|консультац/iu);
+  assert.match(questions[1], /уровен|времен|контакт|подготов/iu);
+});
+
+test("the user's stated business takes priority over a previously selected starter template", () => {
+  const questions = getWorkflowClarificationQuestions("Создай бота для курсов английского", { template: "Магазин" });
+  assert.match(questions[0], /обуч|ученик|курс|консультац/iu);
+  assert.doesNotMatch(questions[0], /каталог|товар/iu);
+});
+
+test("business clarification questions follow the selected site language", () => {
+  assert.match(getWorkflowClarificationQuestions("Create a bot for a barbershop", { locale: "en" })[0], /services|customers/i);
+  assert.match(getWorkflowClarificationQuestions("Сұлулық салонына бот керек", { locale: "kk" })[0], /қызметтер|клиентке/iu);
+});
+
+test("AI-created blocks receive useful customer copy and button labels when the model omits or emits placeholders", () => {
+  const question = normalizeGeneratedNode({ id: "q", kind: "question", title: "Телефон клиента", text: "", buttonLabel: "Далее" }, 0);
+  assert.equal(question.data.text, "Напишите ответ одним сообщением, чтобы мы могли продолжить.");
+  assert.equal(question.data.buttonLabel, "Телефон клиента");
+  assert.ok(question.data.title && question.data.keywords !== undefined);
+
+  const result = applyWorkflowOperations(createBuilderBaseline(), {
+    addNodes: [block("service", "question", "Какая услуга нужна?", "Выберите действие", "")],
+    updateNodes: [], removeNodes: [], removeEdges: [],
+    edges: [{ source: "menu", target: "service", label: "" }],
+  });
+  const service = result.workflow.nodes.find((node) => node.id === "service");
+  assert.equal(service.data.text, "Напишите ответ одним сообщением, чтобы мы могли продолжить.");
+  assert.equal(service.data.buttonLabel, "Какая услуга нужна?");
+  assert.equal(result.workflow.edges.find((edge) => edge.source === "menu" && edge.target === "service").label, "Какая услуга нужна?");
 });
 
 test("AI operations create a reachable custom lead workflow directly in the editor graph", () => {

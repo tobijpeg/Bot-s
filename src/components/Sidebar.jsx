@@ -3,6 +3,7 @@ import { NavLink, useLocation } from "react-router-dom";
 import { supabase } from "../lib/supabase.js";
 import { apiFetch } from "../lib/api.js";
 import Logo from "./Logo.jsx";
+import { useSitePreferences } from "../context/SitePreferencesContext.jsx";
 
 const links = [
   { to: "/overview", label: "Обзор" },
@@ -13,6 +14,7 @@ const links = [
 ];
 
 export default function Sidebar() {
+  const { t } = useSitePreferences();
   const location = useLocation();
   const [unreadCount, setUnreadCount] = useState(0);
   const [isAdmin, setIsAdmin] = useState(false);
@@ -66,7 +68,7 @@ export default function Sidebar() {
               ].join(" ");
             }}
           >
-            <span>{link.label}</span>
+            <span>{t(link.label)}</span>
             {link.to === "/inbox" && unreadCount > 0 && <span className="ml-auto min-w-5 rounded-full bg-violet-600 px-1.5 py-0.5 text-center text-[10px] font-bold text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>}
           </NavLink>
         ))}

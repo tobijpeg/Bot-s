@@ -3,7 +3,9 @@ import { useNavigate, useParams } from "react-router-dom";
 import { addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, useEdgesState, useNodesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 import { useCreateBot } from "../context/CreateBotContext.jsx";
+import { useSitePreferences } from "../context/SitePreferencesContext.jsx";
 import { createDefaultWorkflow, nodeCategories, nodeKinds, workflowPresets } from "../workflow.js";
+import { getWorkflowClarificationQuestions, isWorkflowCreationRequest } from "../workflow-ai.js";
 import { supabase, supabaseSetupError } from "../lib/supabase.js";
 import { apiFetch } from "../lib/api.js";
 
@@ -18,6 +20,32 @@ function WorkflowNode({ data, selected }) {
 }
 const nodeTypes = { workflow: WorkflowNode };
 const editDraftKey = (userId, botId) => `bots-kz-editor-draft-v1:${userId}:${botId}`;
+const AI_BUILDER_COPY = {
+  ru: {
+    title: "ИИ-помощник", subtitle: "Строит и меняет схему конструктора",
+    intro: "Хорошо, подготовлю сценарий под ваш бизнес. Перед построением уточню пару деталей — ответьте одним сообщением:",
+    initialHint: "Опишите задачу бизнеса обычными словами. Для нового сценария сначала уточню пару деталей, затем построю шаги и тексты прямо на схеме.",
+    placeholder: "Например: создай запись для студии массажа…", answerPlaceholder: "Ответьте на оба вопроса одним сообщением…",
+    submit: "Применить к схеме", answerSubmit: "Отправить ответы и построить", skip: "Построить без уточнений", busy: "Изменяю схему…", working: "ИИ строит сценарий…",
+    applied: "Изменения уже применены к схеме — проверьте её и нажмите «Сохранить сценарий».", error: "Не получилось изменить сценарий:",
+  },
+  kk: {
+    title: "ИИ көмекші", subtitle: "Конструктор сызбасын құрады және өзгертеді",
+    intro: "Бизнесіңізге сай сценарий дайындаймын. Құрастыру алдында екі сұрақты нақтылаймын — екеуіне бір хабарламада жауап беріңіз:",
+    initialHint: "Бот бизнесіңізге қалай көмектесуі керегін қарапайым сөзбен жазыңыз. Жаңа сценарий жасамас бұрын екі сұрақ қойып, қадамдар мен мәтіндерді сызбаға қосамын.",
+    placeholder: "Мысалы: массаж студиясына жазылу ботын жаса…", answerPlaceholder: "Екі сұраққа бір хабарламада жауап беріңіз…",
+    submit: "Сызбаға қолдану", answerSubmit: "Жауап беріп, сценарий құру", skip: "Сұрақтарсыз құру", busy: "Сценарий өзгертілуде…", working: "ИИ сценарий құрып жатыр…",
+    applied: "Өзгерістер сызбаға қосылды. Тексеріп, «Сценарийді сақтау» батырмасын басыңыз.", error: "Сценарийді өзгерту мүмкін болмады:",
+  },
+  en: {
+    title: "AI assistant", subtitle: "Builds and updates the workflow",
+    intro: "I’ll tailor the workflow to your business. Before building it, I need two details. Reply to both in one message:",
+    initialHint: "Describe what your business needs in plain language. For a new workflow, I’ll ask two quick questions, then build its steps and copy on the canvas.",
+    placeholder: "For example: create bookings for my massage studio…", answerPlaceholder: "Answer both questions in one message…",
+    submit: "Apply to workflow", answerSubmit: "Send answers and build", skip: "Build without questions", busy: "Updating workflow…", working: "AI is building the workflow…",
+    applied: "The changes are on the canvas. Review them, then select “Save workflow”.", error: "Could not update the workflow:",
+  },
+};
 const cleanWorkflow = (nodes, edges) => ({
   nodes: nodes.map((node) => {
     const cleanNode = { ...node };
@@ -36,6 +64,8 @@ export default function BotFlowEditor() {
   const { botId: routeBotId } = useParams();
   const editing = Boolean(routeBotId);
   const context = useCreateBot();
+  const { language: siteLanguage } = useSitePreferences();
+  const aiCopy = AI_BUILDER_COPY[siteLanguage] || AI_BUILDER_COPY.ru;
   const { userId, botUsername, botName, category, templates, businessName, description, features, items, contacts, ownerTelegramId, greeting, workflow, setField, updateItem, addItem, removeItem, setContact } = context;
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(workflow.edges);
@@ -46,6 +76,7 @@ export default function BotFlowEditor() {
   const [saved, setSaved] = useState("");
   const [aiPrompt, setAiPrompt] = useState("");
   const [aiMessages, setAiMessages] = useState([]);
+  const [aiClarification, setAiClarification] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
   const [blockCategory, setBlockCategory] = useState("Все блоки");
   const [blockSearch, setBlockSearch] = useState("");
@@ -211,24 +242,52 @@ export default function BotFlowEditor() {
     setNodes((current) => current.map((node) => node.id === selectedId ? { ...node, data: { ...node.data, [field]: value } } : node));
   }
 
-  async function askAI(event) {
-    event.preventDefault();
-    const question = aiPrompt.trim();
-    if (!question || aiBusy) return;
-    setAiPrompt(""); setAiBusy(true); setError("");
-    setAiMessages((current) => [...current, { role: "user", text: question }]);
+  async function requestAIScenario(question) {
+    setAiBusy(true); setError("");
     try {
       if (!supabase) throw new Error(supabaseSetupError());
       const { data: authData } = await supabase.auth.getSession();
       if (!authData.session) throw new Error("Сессия Supabase истекла. Войдите заново.");
-      const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session.access_token}` }, body: JSON.stringify({ question, workflow: { nodes, edges }, context: { description, businessName, template: templates[category]?.label, ownerTelegramId } }) });
+      const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session.access_token}` }, body: JSON.stringify({ question, workflow: { nodes, edges }, context: { description, businessName, template: templates[category]?.label, language: contacts?.language || "", interfaceLanguage: siteLanguage, ownerTelegramId } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "ИИ не смог изменить сценарий.");
       setNodes(result.workflow.nodes); setEdges(result.workflow.edges); setSelectedId(null);
-      setAiMessages((current) => [...current, { role: "assistant", text: `${result.answer} Изменения уже применены к схеме — проверь её и нажми «Сохранить сценарий». Лимит: ${result.used}/${result.limit}.` }]);
+      setAiMessages((current) => [...current, { role: "assistant", text: `${result.answer} ${aiCopy.applied} ${siteLanguage === "en" ? "Monthly limit" : siteLanguage === "kk" ? "Айлық лимит" : "Лимит за месяц"}: ${result.used}/${result.limit}.` }]);
     } catch (exception) {
-      setAiMessages((current) => [...current, { role: "assistant", text: `Не получилось изменить сценарий: ${exception.message}` }]);
+      setAiMessages((current) => [...current, { role: "assistant", text: `${aiCopy.error} ${exception.message}` }]);
     } finally { setAiBusy(false); }
+  }
+
+  async function askAI(event) {
+    event.preventDefault();
+    const input = aiPrompt.trim();
+    if (!input || aiBusy) return;
+    setAiPrompt("");
+    setAiMessages((current) => [...current, { role: "user", text: input }]);
+
+    if (aiClarification) {
+      const { original } = aiClarification;
+      setAiClarification(null);
+      await requestAIScenario(`${original.slice(0, 800)}\nУточнения владельца: ${input.slice(0, 900)}\nВыполни исходную просьбу с учётом уточнений; заполни тексты блоков и подписи кнопок под бизнес.`);
+      return;
+    }
+
+    if (isWorkflowCreationRequest(input)) {
+      const questions = getWorkflowClarificationQuestions(input, { businessName, description, template: templates[category]?.label, locale: siteLanguage });
+      setAiClarification({ original: input, questions });
+      setAiMessages((current) => [...current, { role: "assistant", text: `${aiCopy.intro}\n\n1. ${questions[0]}\n\n2. ${questions[1]}` }]);
+      return;
+    }
+
+    await requestAIScenario(input);
+  }
+
+  function skipAIClarification() {
+    if (!aiClarification || aiBusy) return;
+    const { original } = aiClarification;
+    setAiClarification(null);
+    setAiMessages((current) => [...current, { role: "assistant", text: siteLanguage === "en" ? "I’ll build from your initial description. If a business detail is missing, the bot will ask the customer for it." : siteLanguage === "kk" ? "Алғашқы сипаттамаңыз бойынша құрамын. Мәлімет жетіспесе, бот клиенттен оны сұрайды." : "Построю по вашему первому описанию. Если данных не хватает, бот попросит клиента сообщить их в диалоге." }]);
+    void requestAIScenario(original);
   }
 
   async function save() {
@@ -288,13 +347,13 @@ export default function BotFlowEditor() {
         <aside className="flex min-h-[430px] min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-900/5 xl:min-h-0" data-tour-id="ai-builder-panel">
           <div className="flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/70 p-2">{[["ai", "✦ ИИ"], ["node", "▣ Свойства"], ["business", "⌂ Бизнес"]].map(([key, label]) => <button key={key} onClick={() => setInspectorTab(key)} className={`flex-1 rounded-lg px-2 py-2 text-xs font-semibold transition ${inspectorTab === key ? "bg-white text-violet-800 shadow-sm" : "text-slate-500 hover:bg-white/70"}`}>{label}</button>)}</div>
           {inspectorTab === "ai" && <section className="flex min-h-0 flex-1 flex-col p-3" data-tour-id="ai-builder-panel-inner">
-            <div className="flex items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-100 text-violet-700">✦</span><div><h2 className="text-sm font-bold text-navy-950">ИИ-помощник</h2><p className="text-[10px] text-gray-500">Строит и меняет схему конструктора</p></div></div>
+            <div className="flex items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-100 text-violet-700">✦</span><div><h2 className="text-sm font-bold text-navy-950">{aiCopy.title}</h2><p className="text-[10px] text-gray-500">{aiCopy.subtitle}</p></div></div>
             <div aria-live="polite" className="mt-3 min-h-24 flex-1 space-y-2 overflow-y-auto rounded-xl bg-slate-50 p-2.5">
-              {aiMessages.length === 0 && <p className="rounded-lg border border-violet-100 bg-white p-3 text-xs leading-5 text-gray-600">Опишите задачу обычными словами. ИИ расставит блоки и соединит шаги на схеме.</p>}
+              {aiMessages.length === 0 && <p className="rounded-lg border border-violet-100 bg-white p-3 text-xs leading-5 text-gray-600">{aiCopy.initialHint}</p>}
               {aiMessages.map((message, index) => <p key={index} className={`whitespace-pre-line rounded-xl p-2.5 text-xs leading-5 ${message.role === "user" ? "ml-4 bg-violet-100 text-violet-950" : "mr-2 border border-slate-100 bg-white text-gray-700"}`}>{message.text}</p>)}
-              {aiBusy && <p className="px-2 text-xs text-gray-500">ИИ обновляет схему…</p>}
+              {aiBusy && <p className="px-2 text-xs text-gray-500">{aiCopy.working}</p>}
             </div>
-            <form onSubmit={askAI} className="mt-3 shrink-0 space-y-2"><textarea aria-label="Попросить ИИ изменить сценарий" rows={3} maxLength={2000} value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="Например: добавь запись, спроси услугу и телефон…" className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs leading-5 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"/><button type="submit" disabled={aiBusy || !aiPrompt.trim()} className="w-full rounded-xl bg-violet-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-800 disabled:opacity-50">{aiBusy ? "Изменяю схему…" : "Применить к схеме"}</button></form>
+            <form onSubmit={askAI} className="mt-3 shrink-0 space-y-2"><textarea aria-label={aiClarification ? aiCopy.answerSubmit : aiCopy.title} rows={3} maxLength={aiClarification ? 900 : 2000} value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder={aiClarification ? aiCopy.answerPlaceholder : aiCopy.placeholder} className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs leading-5 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"/><button type="submit" disabled={aiBusy || !aiPrompt.trim()} className="w-full rounded-xl bg-violet-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-800 disabled:opacity-50">{aiBusy ? aiCopy.busy : aiClarification ? aiCopy.answerSubmit : aiCopy.submit}</button>{aiClarification && <button type="button" onClick={skipAIClarification} disabled={aiBusy} className="w-full rounded-lg border border-slate-200 px-3 py-2 text-xs font-medium text-slate-600 hover:bg-slate-50 disabled:opacity-50">{aiCopy.skip}</button>}</form>
           </section>}
           {inspectorTab === "node" && <section className="min-h-0 flex-1 overflow-y-auto p-4">
             {selectedNode ? <><div className="flex items-center justify-between"><div><p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Блок сценария</p><h2 className="mt-1 text-sm font-bold text-navy-950">{nodeKinds[selectedNode.data.kind]?.icon} {nodeKinds[selectedNode.data.kind]?.title}</h2></div><button onClick={() => { setNodes((current) => current.filter((node) => node.id !== selectedId)); setEdges((current) => current.filter((edge) => edge.source !== selectedId && edge.target !== selectedId)); setSelectedId(null); }} disabled={selectedNode.data.kind === "start"} className="rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-30">Удалить</button></div>

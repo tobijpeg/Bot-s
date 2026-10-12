@@ -3,14 +3,17 @@ import ReactDOM from "react-dom/client";
 import { BrowserRouter } from "react-router-dom";
 import App from "./App.jsx";
 import { CreateBotProvider } from "./context/CreateBotContext.jsx";
+import { SitePreferencesProvider } from "./context/SitePreferencesContext.jsx";
 import "./index.css";
 
 ReactDOM.createRoot(document.getElementById("root")).render(
   <React.StrictMode>
     <BrowserRouter basename={import.meta.env.BASE_URL.replace(/\/$/, "")}>
-      <CreateBotProvider>
-        <App />
-      </CreateBotProvider>
+      <SitePreferencesProvider>
+        <CreateBotProvider>
+          <App />
+        </CreateBotProvider>
+      </SitePreferencesProvider>
     </BrowserRouter>
   </React.StrictMode>
 );

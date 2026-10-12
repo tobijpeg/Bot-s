@@ -3,8 +3,10 @@ import { Link, Navigate, Outlet, useLocation, useNavigate } from "react-router-d
 import Sidebar from "../components/Sidebar.jsx";
 import ProductTour from "../components/ProductTour.jsx";
 import { supabase } from "../lib/supabase.js";
+import { useSitePreferences } from "../context/SitePreferencesContext.jsx";
 
 export default function AppLayout() {
+  const { language, setLanguage, theme, setTheme, t } = useSitePreferences();
   const navigate = useNavigate();
   const location = useLocation();
   const [user, setUser] = useState(undefined);
@@ -33,9 +35,9 @@ export default function AppLayout() {
     window.addEventListener("bots:tour-completed", onTourCompleted);
     return () => { active = false; window.removeEventListener("bots:onboarding-completed", onCompleted); window.removeEventListener("bots:tour-completed", onTourCompleted); };
   }, [userId]);
-  if (user === undefined) return <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-gray-500">Проверяем вход…</div>;
+  if (user === undefined) return <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-gray-500">{t("Проверяем…")}</div>;
   if (!user) return <Navigate to="/auth" replace />;
-  if (profileState === "checking") return <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-gray-500">Готовим рабочее пространство…</div>;
+  if (profileState === "checking") return <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-gray-500">{t("Готовим рабочее пространство…")}</div>;
   if (profileState === "missing" && location.pathname !== "/welcome") return <Navigate to="/welcome" replace />;
   if (profileState === "complete" && location.pathname === "/welcome") return <Navigate to="/overview" replace />;
   if (profileState === "tour-pending" && location.pathname !== "/welcome" && new URLSearchParams(location.search).get("tour") !== "1") return <Navigate to="/overview?tour=1" replace />;
@@ -44,7 +46,12 @@ export default function AppLayout() {
     <div className="flex min-h-dvh flex-col bg-canvas lg:h-dvh lg:flex-row lg:overflow-hidden">
       <Sidebar />
       <main className="min-h-0 min-w-0 flex-1 overflow-x-hidden px-4 py-4 sm:px-6 lg:h-dvh lg:overflow-y-auto lg:px-8 lg:py-5">
-        <div className="mx-auto mb-4 flex max-w-[1800px] justify-end gap-3 text-xs text-gray-500"><span className="rounded-full border border-gray-200 bg-white/80 px-3 py-1.5">{user.email}</span><button onClick={logout} className="rounded-full px-3 py-1.5 font-semibold text-accent-600 transition hover:bg-violet-50">Выйти</button></div>
+        <div className="mx-auto mb-4 flex max-w-[1800px] flex-wrap items-center justify-end gap-2 text-xs text-gray-500">
+          <label className="sr-only" htmlFor="quick-language">{t("Выберите язык")}</label>
+          <select id="quick-language" value={language} onChange={(event) => setLanguage(event.target.value)} className="rounded-full border border-gray-200 bg-white/80 px-3 py-1.5 text-xs text-gray-600 outline-none focus:border-accent-500"><option value="ru">RU</option><option value="kk">KZ</option><option value="en">EN</option></select>
+          <button type="button" aria-label={t("Тема оформления")} onClick={() => setTheme(theme === "dark" ? "light" : "dark")} className="rounded-full border border-gray-200 bg-white/80 px-3 py-1.5 text-xs transition hover:border-violet-200">{theme === "dark" ? "☀️" : "🌙"}</button>
+          <span className="rounded-full border border-gray-200 bg-white/80 px-3 py-1.5">{user.email}</span><button onClick={logout} className="rounded-full px-3 py-1.5 font-semibold text-accent-600 transition hover:bg-violet-50">{t("Выйти")}</button>
+        </div>
         {profileState === "unavailable" && <p role="status" className="mb-4 rounded-lg bg-amber-50 p-3 text-xs text-amber-900">Анкета и экскурсия пока не подключены к базе. Примените актуальную миграцию Supabase, чтобы включить новые возможности.</p>}
         <div className="mx-auto max-w-[1800px]"><Outlet /></div>
       </main>

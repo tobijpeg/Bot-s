@@ -4,11 +4,14 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSyn
 import { dirname, join, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
-import { Bot, InlineKeyboard, Keyboard } from "grammy";
+import { Bot, InlineKeyboard, InputFile, Keyboard } from "grammy";
 import { botLaunchIdFromPath, createDefaultWorkflow, nodeKinds } from "./src/workflow.js";
 import { builderReply, summarizeWorkflowChange } from "./src/ai-safety.js";
 import { applyWorkflowOperations, createBuilderBaseline, isWorkflowCreationRequest } from "./src/workflow-ai.js";
 import { createReadStream } from "node:fs";
+import { createWorkflowRuntime, isValidTelegramChatId } from "./src/workflow-runtime.js";
+import { deliverInboxReply, InboxReplyError } from "./src/inbox-delivery.js";
+import { applyTelegramProfile, normalizeTelegramProfile } from "./src/telegram-profile.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
 loadEnv({ path: join(root, ".env") });
@@ -254,7 +257,11 @@ function configOf(data, existing = {}) {
   const nodes = workflow.nodes.slice(0, 100).filter((node) => node && typeof node.id === "string" && nodeKinds[node.data?.kind]).map((node) => ({ id: node.id.slice(0, 80), type: "workflow", position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 }, data: { kind: node.data.kind, title: String(node.data.title || nodeKinds[node.data.kind].title).slice(0, 100), text: String(node.data.text || "").slice(0, 1500), buttonLabel: String(node.data.buttonLabel || "").slice(0, 60), keywords: String(node.data.keywords || "").slice(0, 300), url: safeUrl(node.data.url), condition: String(node.data.condition || "").slice(0, 300), delaySeconds: Math.max(0, Math.min(300, Math.floor(Number(node.data.delaySeconds) || 0))) } }));
   const ids = new Set(nodes.map((node) => node.id));
   const edges = workflow.edges.slice(0, 200).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).map((edge) => ({ id: String(edge.id || randomBytes(5).toString("hex")).slice(0, 100), source: edge.source, target: edge.target, label: String(edge.label || "").slice(0, 50) }));
-  return { ...existing, ...data, botName: existing.botName, ownerTelegramId: String(data.ownerTelegramId ?? existing.ownerTelegramId ?? "").replace(/[^0-9-]/g, "").slice(0, 20), businessName: String(data.businessName || "").slice(0, 120), template: String(data.template || "").slice(0, 100), description: String(data.description || "").slice(0, 5000), greeting: String(data.greeting || "").slice(0, 1000), features: Array.isArray(data.features) ? data.features.slice(0, 30).map((item) => String(item).slice(0, 100)) : existing.features || [], items: Array.isArray(data.items) ? data.items.slice(0, 100).map((item) => ({ name: String(item.name || "").slice(0, 200), price: Math.max(0, Number(item.price) || 0) })) : existing.items || [], contacts: { address: String(data.contacts?.address ?? existing.contacts?.address ?? "").slice(0, 300), hours: String(data.contacts?.hours ?? existing.contacts?.hours ?? "").slice(0, 200), phone: String(data.contacts?.phone ?? existing.contacts?.phone ?? "").slice(0, 50), language: String(data.contacts?.language ?? existing.contacts?.language ?? "Русский и казахский").slice(0, 100) }, workflow: { nodes, edges } };
+  const profileSource = data.telegramProfile ?? existing.telegramProfile;
+  const telegramProfile = profileSource && typeof profileSource === "object" ? { name: String(profileSource.name || "").slice(0, 64), description: String(profileSource.description || "").slice(0, 512), shortDescription: String(profileSource.shortDescription || "").slice(0, 120) } : undefined;
+  const safeData = { ...data };
+  delete safeData.telegramProfile;
+  return { ...existing, ...safeData, ...(telegramProfile ? { telegramProfile } : {}), botName: existing.botName, ownerTelegramId: String(data.ownerTelegramId ?? existing.ownerTelegramId ?? "").replace(/[^0-9-]/g, "").slice(0, 20), businessName: String(data.businessName || "").slice(0, 120), template: String(data.template || "").slice(0, 100), description: String(data.description || "").slice(0, 5000), greeting: String(data.greeting || "").slice(0, 1000), features: Array.isArray(data.features) ? data.features.slice(0, 30).map((item) => String(item).slice(0, 100)) : existing.features || [], items: Array.isArray(data.items) ? data.items.slice(0, 100).map((item) => ({ name: String(item.name || "").slice(0, 200), price: Math.max(0, Number(item.price) || 0) })) : existing.items || [], contacts: { address: String(data.contacts?.address ?? existing.contacts?.address ?? "").slice(0, 300), hours: String(data.contacts?.hours ?? existing.contacts?.hours ?? "").slice(0, 200), phone: String(data.contacts?.phone ?? existing.contacts?.phone ?? "").slice(0, 50), language: String(data.contacts?.language ?? existing.contacts?.language ?? "Русский и казахский").slice(0, 100) }, workflow: { nodes, edges } };
 }
 
 const conversationState = new Map();
@@ -271,119 +278,11 @@ function persistConversationState() {
 }
 function setConversationState(key, value) { conversationState.set(key, { ...value, updatedAt: Date.now() }); persistConversationState(); }
 function clearConversationState(key) { if (conversationState.delete(key)) persistConversationState(); }
+const workflowRuntime = createWorkflowRuntime({ InlineKeyboard, Keyboard, setConversationState });
 function workflowStateKey(bot, chatId) { return `${bot.botInfo?.id || "bot"}:${chatId}`; }
 
 async function executeFlow(bot, ctx, record, startId, depth = 0) {
-  if (depth > 15) return;
-  const workflow = record.config.workflow || createDefaultWorkflow();
-  const current = workflow.nodes.find((node) => node.id === startId);
-  if (!current) return;
-  const outgoing = workflow.edges.filter((edge) => edge.source === current.id);
-  const config = record.config;
-  const next = async () => { if (outgoing.length === 1) await executeFlow(bot, ctx, record, outgoing[0].target, depth + 1); };
-  switch (current.data.kind) {
-    case "start":
-      await next();
-      break;
-    case "message":
-      if (current.data.text) await ctx.reply(current.id === "welcome" ? (config.greeting || current.data.text) : current.data.text);
-      await next();
-      break;
-    case "menu": {
-      if (!outgoing.length) break;
-      const keyboard = new InlineKeyboard();
-      outgoing.forEach((edge, index) => {
-        const target = workflow.nodes.find((node) => node.id === edge.target);
-        if (target) {
-          keyboard.text(edge.label || target.data.buttonLabel || target.data.title || nodeKinds[target.data.kind].title, `flow:${target.id}`);
-          if (index % 2 === 1) keyboard.row();
-        }
-      });
-      await ctx.reply("Выберите действие:", { reply_markup: keyboard });
-      break;
-    }
-    case "catalog": {
-      const entries = config.items || [];
-      await ctx.reply(entries.length ? entries.map((item) => `• ${item.name} — ${Number(item.price || 0).toLocaleString("ru-RU")} ₸`).join("\n") : "Каталог пока не заполнен. Добавьте товары или услуги в редакторе бота.");
-      await next();
-      break;
-    }
-    case "contacts": {
-      const contact = config.contacts || {};
-      await ctx.reply([contact.address, contact.hours, contact.phone].filter(Boolean).join("\n") || "Контакты пока не заполнены. Напишите владельцу бота.");
-      await next();
-      break;
-    }
-    case "booking":
-      await ctx.reply(current.data.text || "Напишите, пожалуйста, что вас интересует и как с вами связаться.");
-      setConversationState(workflowStateKey(bot, ctx.chat.id), { kind: "booking", nodeId: current.id });
-      break;
-    case "handoff":
-      if (config.ownerTelegramId && /^\d{5,20}$/.test(String(config.ownerTelegramId))) {
-        await ctx.api.sendMessage(config.ownerTelegramId, `Новый запрос оператору из @${record.username || "бота"}.\nОт пользователя: ${ctx.from?.first_name || "Пользователь"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}\nTelegram ID: ${ctx.chat.id}`);
-        await ctx.reply(current.data.text || "Передал запрос команде. Мы свяжемся с вами.");
-      } else await ctx.reply("Владелец ещё не настроил получение обращений. Напишите по контактам в меню.");
-      break;
-    case "payment": {
-      const url = String(current.data.url || "");
-      if (/^https:\/\//i.test(url)) await ctx.reply(current.data.text || "Перейдите по ссылке для оплаты:", { reply_markup: new InlineKeyboard().url(current.data.buttonLabel || "Оплатить", url) });
-      else await ctx.reply("Ссылка на оплату ещё не настроена. Владелец может добавить её в настройках блока.");
-      await next();
-      break;
-    }
-    case "feedback":
-      await ctx.reply(current.data.text || "Оцените наш сервис от 1 до 5 и напишите комментарий.");
-      setConversationState(workflowStateKey(bot, ctx.chat.id), { kind: "feedback", nodeId: current.id });
-      break;
-    case "subscribe":
-      await ctx.reply(current.data.text || "Чтобы подписаться на новости, напишите «Подписаться».");
-      setConversationState(workflowStateKey(bot, ctx.chat.id), { kind: "subscribe", nodeId: current.id });
-      break;
-    case "document":
-      await ctx.reply(current.data.text || "Пришлите документ или изображение сообщением — я передам его владельцу.");
-      setConversationState(workflowStateKey(bot, ctx.chat.id), { kind: "document", nodeId: current.id });
-      break;
-    case "fallback":
-      await ctx.reply(current.data.text || "Не понял запрос. Выберите пункт меню или напишите по контакту из раздела «Контакты».");
-      await next();
-      break;
-    case "keyword":
-      await next();
-      break;
-    case "question":
-      await ctx.reply(current.data.text || "Напишите ответ сообщением, чтобы продолжить.");
-      setConversationState(workflowStateKey(bot, ctx.chat.id), { kind: "question", nodeId: current.id });
-      break;
-    case "condition":
-      await ctx.reply(current.data.text || "Для продолжения выберите подходящий вариант:");
-      if (outgoing.length) { const keyboard = new InlineKeyboard(); outgoing.slice(0, 8).forEach((edge) => { const target = workflow.nodes.find((node) => node.id === edge.target); if (target) keyboard.text(edge.label || target.data.buttonLabel || target.data.title, `flow:${target.id}`).row(); }); await ctx.reply("Выберите вариант:", { reply_markup: keyboard }); }
-      break;
-    case "delay": {
-      const seconds = Math.max(0, Math.min(300, Math.floor(Number(current.data.delaySeconds) || 0)));
-      if (seconds) await new Promise((resolvePromise) => setTimeout(resolvePromise, seconds * 1000));
-      await ctx.reply(current.data.text || (seconds ? `Пауза ${seconds} сек. завершена.` : "Продолжаем сценарий."));
-      await next();
-      break;
-    }
-    case "notification":
-      if (config.ownerTelegramId && /^\d{5,20}$/.test(String(config.ownerTelegramId))) {
-        await ctx.api.sendMessage(config.ownerTelegramId, `${current.data.text || "Новое уведомление"}\nОт: ${ctx.from?.first_name || "Пользователь"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}\nID: ${ctx.chat.id}`);
-        await ctx.reply("Передал сообщение владельцу.");
-      } else await ctx.reply("Владелец ещё не настроил Telegram ID для уведомлений. Используйте контакты в меню.");
-      await next();
-      break;
-    case "link":
-      if (/^https:\/\//i.test(String(current.data.url || ""))) await ctx.reply(current.data.text || "Откройте страницу по кнопке:", { reply_markup: new InlineKeyboard().url(current.data.buttonLabel || "Открыть", current.data.url) });
-      else await ctx.reply(current.data.text || "Ссылка ещё не настроена. Владелец может добавить HTTPS-ссылку в редакторе.");
-      await next();
-      break;
-    case "location":
-      await ctx.reply(current.data.text || "Поделитесь геолокацией или напишите адрес текстом.", { reply_markup: new Keyboard().requestLocation("📍 Отправить геолокацию").resized().oneTime() });
-      setConversationState(workflowStateKey(bot, ctx.chat.id), { kind: "location", nodeId: current.id });
-      break;
-    default:
-      break;
-  }
+  return workflowRuntime.executeFlow(ctx, record, startId, depth);
 }
 
 async function startBot(record) {
@@ -391,6 +290,7 @@ async function startBot(record) {
   const bot = new Bot(decrypt(record.encryptedToken));
   const config = record.config || {};
   bot.command("start", async (ctx) => {
+    clearConversationState(workflowStateKey(bot, ctx.chat.id));
     const workflow = config.workflow || createDefaultWorkflow();
     const trigger = workflow.nodes.find((node) => node.data.kind === "start");
     if (trigger) await executeFlow(bot, ctx, record, trigger.id);
@@ -416,15 +316,15 @@ async function startBot(record) {
       const pendingNode = workflow.nodes.find((node) => node.id === pending.nodeId);
       if (pending.kind === "subscribe") {
         const subscribed = /^(да|подписаться|хочу|yes|иә)$/i.test(text);
-        if (subscribed && config.ownerTelegramId && /^\d{5,20}$/.test(String(config.ownerTelegramId))) await ctx.api.sendMessage(config.ownerTelegramId, `Новая подписка на новости в @${record.username || "бота"}: ${ctx.from?.first_name || "Пользователь"} (ID ${ctx.chat.id}).`);
+        if (subscribed && isValidTelegramChatId(config.ownerTelegramId)) await ctx.api.sendMessage(String(config.ownerTelegramId), `Новая подписка на новости в @${record.username || "бота"}: ${ctx.from?.first_name || "Пользователь"} (ID ${ctx.chat.id}).`);
         await ctx.reply(subscribed ? "Спасибо! Передал ваш запрос владельцу. Рассылку новостей владелец сможет организовать отдельно." : "Хорошо, подписку не оформлял.");
+        if (subscribed) await workflowRuntime.continueFromNode(ctx, record, pending.nodeId);
         return;
       }
       if (pending.kind === "location") {
-        if (config.ownerTelegramId && /^\d{5,20}$/.test(String(config.ownerTelegramId))) await ctx.api.sendMessage(config.ownerTelegramId, `Адрес от ${ctx.from?.first_name || "Пользователя"} (ID ${ctx.chat.id}):\n${text.slice(0, 1000)}`);
-        await ctx.reply("Спасибо! Передал адрес владельцу.", { reply_markup: { remove_keyboard: true } });
-        const outgoing = workflow.edges.filter((edge) => edge.source === pending.nodeId);
-        if (outgoing.length === 1) await executeFlow(bot, ctx, record, outgoing[0].target);
+        if (isValidTelegramChatId(config.ownerTelegramId)) await ctx.api.sendMessage(String(config.ownerTelegramId), `Адрес от ${ctx.from?.first_name || "Пользователя"} (ID ${ctx.chat.id}):\n${text.slice(0, 1000)}`);
+        await ctx.reply(isValidTelegramChatId(config.ownerTelegramId) ? "Спасибо! Передал адрес владельцу." : "Адрес сохранён во входящих. Владелец увидит его в кабинете.", { reply_markup: { remove_keyboard: true } });
+        await workflowRuntime.continueFromNode(ctx, record, pending.nodeId);
         return;
       }
       if (pending.kind === "document") {
@@ -432,12 +332,13 @@ async function startBot(record) {
         setConversationState(stateKey, pending);
         return;
       }
-      if (pendingNode && ["question", "feedback", "booking"].includes(pending.kind)) {
+      if (pendingNode && ["question", "feedback", "booking", "handoff"].includes(pending.kind)) {
         if (pending.kind === "booking" || pending.kind === "feedback") await saveInboxMessage(record, ctx, { kind: "system", text: pending.kind === "booking" ? "Заявка" : "Отзыв" });
-        if (config.ownerTelegramId && /^\d{5,20}$/.test(String(config.ownerTelegramId))) await ctx.api.sendMessage(config.ownerTelegramId, `Новое ${pending.kind === "feedback" ? "сообщение/отзыв" : "обращение"} в @${record.username || "бота"}.\nОт: ${ctx.from?.first_name || "Пользователь"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}\nID: ${ctx.chat.id}\n\n${text.slice(0, 3500)}`);
-        await ctx.reply(pending.kind === "feedback" ? "Спасибо за обратную связь!" : "Спасибо! Передал вашу заявку владельцу.");
-        const outgoing = workflow.edges.filter((edge) => edge.source === pending.nodeId);
-        if (outgoing.length === 1) await executeFlow(bot, ctx, record, outgoing[0].target);
+        const ownerConfigured = isValidTelegramChatId(config.ownerTelegramId);
+        if (ownerConfigured) await ctx.api.sendMessage(String(config.ownerTelegramId), `Новое ${pending.kind === "feedback" ? "сообщение/отзыв" : pending.kind === "handoff" ? "сообщение оператору" : "обращение"} в @${record.username || "бота"}.\nОт: ${ctx.from?.first_name || "Пользователь"}${ctx.from?.username ? ` (@${ctx.from.username})` : ""}\nID: ${ctx.chat.id}\n\n${text.slice(0, 3500)}`);
+        const confirmation = pending.kind === "feedback" ? "Спасибо за обратную связь!" : pending.kind === "handoff" ? (ownerConfigured ? "Передал сообщение оператору. Он ответит вам в этом чате." : "Сообщение сохранено во входящих. Владелец увидит его в кабинете.") : "Спасибо! Передал вашу заявку владельцу.";
+        await ctx.reply(confirmation);
+        await workflowRuntime.continueFromNode(ctx, record, pending.nodeId);
         return;
       }
     }
@@ -454,13 +355,11 @@ async function startBot(record) {
     await saveInboxMessage(record, ctx, telegramMessageSummary(ctx));
     clearConversationState(stateKey);
     const location = ctx.message.location;
-    if (config.ownerTelegramId && /^\d{5,20}$/.test(String(config.ownerTelegramId))) {
-      await ctx.api.sendLocation(config.ownerTelegramId, location.latitude, location.longitude);
-      await ctx.api.sendMessage(config.ownerTelegramId, `Геолокация от ${ctx.from?.first_name || "Пользователя"} (ID ${ctx.chat.id}) в @${record.username || "боте"}.`);
+    if (isValidTelegramChatId(config.ownerTelegramId)) {
+      await ctx.api.sendLocation(String(config.ownerTelegramId), location.latitude, location.longitude);
+      await ctx.api.sendMessage(String(config.ownerTelegramId), `Геолокация от ${ctx.from?.first_name || "Пользователя"} (ID ${ctx.chat.id}) в @${record.username || "боте"}.`);
       await ctx.reply("Геолокация передана владельцу. Спасибо!", { reply_markup: { remove_keyboard: true } });
-      const workflow = config.workflow || createDefaultWorkflow();
-      const outgoing = workflow.edges.filter((edge) => edge.source === pending.nodeId);
-      if (outgoing.length === 1) await executeFlow(bot, ctx, record, outgoing[0].target);
+      await workflowRuntime.continueFromNode(ctx, record, pending.nodeId);
     } else await ctx.reply("Владелец ещё не настроил получение геолокации. Отправьте адрес текстом.", { reply_markup: { remove_keyboard: true } });
   });
   bot.on(["message:document", "message:photo"], async (ctx) => {
@@ -478,7 +377,7 @@ async function startBot(record) {
       return;
     }
     const ownerId = String(record.config.ownerTelegramId || "");
-    if (!/^\d{5,20}$/.test(ownerId)) {
+    if (!isValidTelegramChatId(ownerId)) {
       await ctx.reply("Приём файлов ещё не настроен. Владелец должен отправить /myid этому боту, а затем указать полученный ID в настройках сценария.");
       return;
     }
@@ -489,8 +388,7 @@ async function startBot(record) {
       await ctx.api.sendMessage(ownerId, `Новый файл от ${sender}${ctx.from?.username ? ` (@${ctx.from.username})` : ""} в боте @${record.username || "bot"}.`);
       await ctx.reply("Файл передан владельцу. Спасибо!");
       clearConversationState(stateKey);
-      const outgoing = workflow.edges.filter((edge) => edge.source === pending.nodeId);
-      if (outgoing.length === 1) await executeFlow(bot, ctx, record, outgoing[0].target);
+      await workflowRuntime.continueFromNode(ctx, record, pending.nodeId);
     } catch (error) {
       console.error(`Could not forward Telegram document (${record.username || record.id}):`, error.message);
       await ctx.reply("Не получилось доставить файл владельцу. Попробуйте ещё раз позже.");
@@ -564,18 +462,13 @@ const server = createServer(async (req, res) => {
       const user = await supabaseUserFromRequest(req); if (!user) return response(res, 401, { error: "Войдите через Supabase." });
       const data = await bodyOf(req); const text = String(data.text || "").trim();
       if (!text || text.length > 4000) return response(res, 400, { error: "Ответ должен содержать от 1 до 4000 символов." });
-      const result = await serviceRpc("send_inbox_reply", { p_owner_id: user.id, p_conversation_id: inboxReplyMatch[1], p_text: text });
-      const reply = Array.isArray(result) ? result[0] : result;
-      if (!reply?.id) return response(res, 404, { error: "Диалог не найден или уже закрыт." });
-      const record = await getOwnedBot(user, reply.bot_id);
-      if (!record) return response(res, 404, { error: "Бот для этого диалога не найден." });
-      const bot = running.get(record.id)?.bot || new Bot(decrypt(record.encryptedToken));
-      try { await bot.api.sendMessage(Number(reply.telegram_chat_id), text); }
-      catch (error) {
-        await serviceRpc("delete_inbox_message", { p_message_id: reply.id, p_owner_id: user.id });
-        return response(res, 502, { error: `Telegram не доставил ответ: ${error.description || error.message}` });
+      try {
+        const message = await deliverInboxReply({ ownerId: user.id, conversationId: inboxReplyMatch[1], text, serviceRpc, getOwnedBot, runningBots: running, createBot: (token) => new Bot(token), decrypt, onCleanupError: (error, messageId) => console.error(`Could not roll back undelivered inbox reply ${messageId}:`, error.message) });
+        return response(res, 200, { message });
+      } catch (error) {
+        if (error instanceof InboxReplyError) return response(res, error.status, { error: error.message });
+        throw error;
       }
-      return response(res, 200, { message: { id: reply.id, direction: "outbound", kind: "text", text, created_at: reply.created_at } });
     }
     const inboxFileMatch = url.pathname.match(/^\/api\/inbox\/files\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})$/i);
     if (req.method === "GET" && inboxFileMatch) {
@@ -632,9 +525,17 @@ const server = createServer(async (req, res) => {
       const previous = running.get(record.id);
       if (previous) { await previous.bot.stop(); running.delete(record.id); }
       const data = await bodyOf(req);
+      let telegramProfile;
+      if (Object.hasOwn(data, "telegramProfile")) {
+        try { telegramProfile = normalizeTelegramProfile(data.telegramProfile); }
+        catch (error) { return response(res, 400, { error: error.message }); }
+        delete data.telegramProfile;
+      }
       record.config = configOf(data, record.config);
+      if (telegramProfile) record.config.telegramProfile = { name: telegramProfile.name, description: telegramProfile.description, shortDescription: telegramProfile.shortDescription };
       await restCall(user, "bots", { method: "PATCH", query: `?id=eq.${record.id}&owner_id=eq.${user.id}`, body: { config: record.config, status: "Запускается", updated_at: new Date().toISOString() } });
       try {
+        if (telegramProfile) await applyTelegramProfile(new Bot(decrypt(record.encryptedToken)).api, telegramProfile, InputFile);
         const commandResponse = await fetch(`https://api.telegram.org/bot${decrypt(record.encryptedToken)}/setMyCommands`, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ commands: [{ command: "start", description: "Открыть меню" }, { command: "help", description: "Помощь" }] }), signal: AbortSignal.timeout(15_000) });
         const commandResult = await commandResponse.json();
         if (!commandResponse.ok || !commandResult.ok) throw new Error(commandResult.description || "Telegram не принял список команд.");
@@ -642,7 +543,7 @@ const server = createServer(async (req, res) => {
         record.status = "Работает на сервере платформы";
         await restCall(user, "bots", { method: "PATCH", query: `?id=eq.${record.id}&owner_id=eq.${user.id}`, body: { status: record.status, updated_at: new Date().toISOString() } });
         return response(res, 200, { bot: safeBot(record) });
-      } catch { record.status = "Ошибка запуска"; try { await restCall(user, "bots", { method: "PATCH", query: `?id=eq.${record.id}&owner_id=eq.${user.id}`, body: { status: record.status } }); } catch { /* Preserve original launch error. */ } return response(res, 502, { error: "Не удалось запустить бота. Проверьте токен и журнал сервера." }); }
+      } catch (error) { record.status = "Ошибка запуска"; try { await restCall(user, "bots", { method: "PATCH", query: `?id=eq.${record.id}&owner_id=eq.${user.id}`, body: { status: record.status } }); } catch { /* Preserve original launch error. */ } return response(res, 502, { error: telegramProfile ? `Не удалось применить профиль или запустить бота: ${error.message}` : "Не удалось запустить бота. Проверьте токен и журнал сервера." }); }
     }
     const editMatch = url.pathname.match(/^\/api\/bots\/([0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\/config$/i);
     if (req.method === "PUT" && editMatch) {
@@ -709,19 +610,22 @@ const server = createServer(async (req, res) => {
         if (isWorkflow) {
           const supplied = data.workflow || {};
           const creating = isWorkflowCreationRequest(question);
-          const starter = createBuilderBaseline(String(data.context?.greeting || "Здравствуйте! Расскажите, чем мы можем помочь."));
+          const businessName = String(data.context?.businessName || "").trim().slice(0, 200);
+          const starterGreeting = String(data.context?.greeting || (businessName ? `Здравствуйте! Добро пожаловать в ${businessName}. Расскажите, чем мы можем помочь.` : "Здравствуйте! Расскажите, чем мы можем помочь — подскажем следующий шаг."));
+          const starter = createBuilderBaseline(starterGreeting);
           const currentNodes = creating ? starter.nodes : (Array.isArray(supplied.nodes) ? supplied.nodes.slice(0, 100) : []);
           const currentEdges = creating ? starter.edges : (Array.isArray(supplied.edges) ? supplied.edges.slice(0, 200) : []);
           const nodeSummary = currentNodes.map((node) => ({ id: node.id, kind: node.data?.kind, title: node.data?.title, text: String(node.data?.text || "").slice(0, 350), buttonLabel: node.data?.buttonLabel || "", keywords: node.data?.keywords || "" }));
           const edgeSummary = currentEdges.map((edge) => ({ id: edge.id, source: edge.source, target: edge.target, label: edge.label || "" }));
           const wantsDocuments = /документ|файл|вложен|скан/i.test(question);
           const ownerTelegramId = String(data.context?.ownerTelegramId || "");
-          const plan = await askLocalAI(`Ты редактируешь сценарий в визуальном конструкторе Telegram-ботов. Запрос владельца: «${question}».
+          const plan = await askLocalAI(`Ты — доброжелательный помощник владельца малого или среднего бизнеса, который настраивает Telegram-бота через визуальный конструктор. Говори с владельцем как с клиентом сервиса, а не как с разработчиком или тестировщиком; не упоминай JSON, внутренние ID, модели, схемы данных и техническую реализацию. Запрос владельца: «${question}».
 ${creating
-    ? "СОЗДАНИЕ С НУЛЯ: перед тобой чистая основа из блоков /start, приветствия, главного меню и ответа по умолчанию. Предыдущий готовый шаблон намеренно очищен. Построй под запрос владельца персональный процесс: добавь от 2 до 8 подходящих блоков и свяжи их так, чтобы клиент мог пройти весь путь. Не добавляй стандартные магазин, каталог, бронь или доставку, если владелец этого не просил."
-    : "ИЗМЕНЕНИЕ СУЩЕСТВУЮЩЕЙ СХЕМЫ: сохрани все текущие блоки и связи, которые не относятся к просьбе. Выполни именно указанное действие; добавь или обнови только нужные узлы, а для удаления укажи их ID в removeNodes. Для переподключения удали ненужные ID связей через removeEdges и добавь новые через edges."}
-Верни короткий ответ владельцу на русском. Верни JSON-операции: addNodes (новые блоки), updateNodes (изменение текста/названия существующих), removeNodes (удаление узлов, кроме start и fallback), removeEdges (ID удаляемых связей), edges (новые связи).
-Доступные виды блоков: ${Object.keys(nodeKinds).join(", ")}. Для свободного ответа клиента (дата, время, имя, телефон, адрес и другие сведения) обязательно используй kind question. Такой блок принимает текстовый ответ, он не показывает список кнопок. Если владелец не указал варианты услуг или товаров, попроси клиента написать свой выбор текстом и не обещай выбор «из списка». Для подтверждения и пояснения используй message. Kind menu используй только для реального выбора из нескольких кнопок, а не для вопроса, ожидания ответа или последовательного шага. Не создавай отдельный однокнопочный menu для записи или заявки: добавь прямую кнопку из существующего главного меню к первому шагу этой ветки. Для оформления заявки используй booking; для отправки файла — document. Добавь ровно столько шагов, сколько нужно для полного пути клиента, максимум 8. У новых блоков укажи уникальный короткий латинский id, точные понятные title, текст для клиента, подпись кнопки и keywords. Все новые ветки должны начинаться от меню или другого существующего шага и не должны возвращаться к /start. Сохраняй /start и fallback. Не придумывай цены, адреса, расписание, наличие, внешние интеграции или обещания функций, которых нет в схеме. Если владелец не сообщил нужные данные, добавь вопрос, который соберёт их у клиента. В блоке document объясни, какой файл отправить; такие файлы попадут владельцу в «Входящие». Telegram ID ${ownerTelegramId ? "настроен" : "не настроен"}. Контекст бизнеса: ${String(data.context?.businessName || "не указано").slice(0, 200)}. Описание: ${String(data.context?.description || "не указано").slice(0, 1500)}. Текущие узлы: ${JSON.stringify(nodeSummary)}. Текущие связи: ${JSON.stringify(edgeSummary)}.`, { description: String(data.context?.description || "").slice(0, 1500), businessName: String(data.context?.businessName || "").slice(0, 200), template: creating ? "Персональный сценарий с нуля" : String(data.context?.template || "").slice(0, 100) }, "builder-structured", BOT_WORKFLOW_EDIT_SCHEMA, 1600);
+    ? "СОЗДАНИЕ С НУЛЯ: перед тобой чистая основа из блоков /start, приветствия, главного меню и ответа по умолчанию. Предыдущий готовый шаблон намеренно очищен. Построй завершённый, персональный путь клиента под конкретный запрос владельца: от приветствия и понятного меню до получения нужной информации, подтверждения и следующего действия. Заполни welcome и menu полезным текстом под этот бизнес, добавь только уместные шаги. Не добавляй магазин, каталог, запись, доставку или оплату, если владелец этого не просил."
+    : "ИЗМЕНЕНИЕ СУЩЕСТВУЮЩЕЙ СХЕМЫ: выполни весь запрос владельца, а не только предложи план. Сохрани все не затронутые просьбой блоки, связи и удачные тексты; обнови каждое относящееся к запросу поле, включая название блока, текст клиенту, подпись кнопки, ключевые слова и подписи переходов. Если нужно изменить несколько шагов, обнови все их. Для удаления укажи ID узлов и связей. Не оставляй устаревшие или дублирующие ветки."}
+Язык интерфейса владельца: ${String(data.context?.interfaceLanguage || "ru")}. Ответ владельцу пиши на языке интерфейса (ru — русский, kk — казахский, en — английский), если сам запрос явно не написан на другом языке. Язык/языки клиентского Telegram-бота: ${String(data.context?.language || "язык запроса владельца")}. Тексты для клиентов пиши на языке настройки бота; если указано несколько языков, добавляй короткую локализованную версию на каждом из них. Подстраивай лексику и тон под бизнес, аудиторию и пожелания владельца. Если известно название бизнеса, естественно используй его в приветствии или подтверждении. Пиши живо, конкретно и доброжелательно: обращайся к клиенту понятно и по делу, объясняй следующий шаг. Не используй сухие технические формулировки и общие заглушки вроде «Выберите действие», «Настройте текст», «Далее» и «Напишите, чем помочь», если можно предложить осмысленную фразу по контексту. Названия меню и кнопок должны быть короткими, привлекательными, конкретными и соответствовать действию; не копируй один и тот же ярлык для всех кнопок.
+Верни короткий, естественный ответ владельцу: назови, что именно ты построил/изменил для его бизнеса и какие шаги есть в сценарии. Не сообщай внутренние детали конструктора. Верни JSON-операции: addNodes (новые блоки), updateNodes (изменение текста/названия существующих), removeNodes (удаление узлов, кроме start и fallback), removeEdges (ID удаляемых связей), edges (новые связи). Все поля title, text, buttonLabel должны быть заполнены содержательным текстом. Каждая новая связь должна иметь непустую подпись для кнопки.
+Доступные виды блоков: ${Object.keys(nodeKinds).join(", ")}. Для свободного ответа клиента (дата, время, имя, телефон, адрес и другие сведения) обязательно используй kind question: он принимает текстовый ответ, а не показывает список кнопок. Если владелец не дал список услуг/товаров, не выдумывай его и не обещай выбор из списка — попроси клиента назвать свой вариант сообщением. Для реального выбора нескольких известных вариантов используй menu. Для пояснения или подтверждения используй message. Не создавай отдельный однокнопочный menu для заявки или записи: добавь прямую подписанную кнопку из существующего главного меню к первому шагу ветки. Для заявки/записи используй booking, для файла — document. Добавь необходимое число шагов для полного пути клиента, максимум 8 новых блоков. Дай новым блокам уникальные короткие латинские id, точные понятные title, персональный текст клиенту, выразительную короткую buttonLabel и релевантные keywords. Подписывай каждую связь смыслом действия, а не техническим «далее». Новые ветки начинай от меню или подходящего шага; не возвращайся к /start. Сохраняй /start и fallback. Не придумывай цены, адрес, график, наличие, сроки, гарантии, интеграции или обещания функций, которых нет в брифе и текущей схеме. Не хватает бизнес-данных — добавь клиентский вопрос, который соберёт конкретно недостающее. Уже заданные владельцем ответы и пожелания важнее предположений; не переспрашивай их. В документном блоке скажи, какой файл прислать; загруженные файлы доступны владельцу во «Входящих». Telegram ID ${ownerTelegramId ? "настроен" : "не настроен"}. Контекст бизнеса — название: ${String(data.context?.businessName || "не указано").slice(0, 200)}; описание: ${String(data.context?.description || "не указано").slice(0, 1500)}; шаблон: ${String(data.context?.template || "пользовательская структура").slice(0, 100)}. Текущие узлы: ${JSON.stringify(nodeSummary)}. Текущие связи: ${JSON.stringify(edgeSummary)}.`, { description: String(data.context?.description || "").slice(0, 1500), businessName: String(data.context?.businessName || "").slice(0, 200), template: creating ? "Персональный сценарий с нуля" : String(data.context?.template || "").slice(0, 100) }, "builder-structured", BOT_WORKFLOW_EDIT_SCHEMA, 2200);
           const generated = JSON.parse(plan);
           const baseWorkflow = { nodes: currentNodes, edges: currentEdges };
           const { workflow, addedCount, updatedCount, removedCount, changed } = applyWorkflowOperations(baseWorkflow, generated, { wantsDocuments });
