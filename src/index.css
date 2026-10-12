@@ -4,9 +4,21 @@
 
 body {
   font-family: "Inter", system-ui, sans-serif;
-  background-color: #eef0f2;
+  background: radial-gradient(ellipse at 70% -15%, rgba(124, 58, 237, 0.07), transparent 38%), #f1f2f6;
   color: #1b2440;
 }
+
+html, body, #root { min-height: 100%; }
+
+::selection { background: rgba(124, 58, 237, 0.18); }
+
+:focus-visible { outline: 2px solid #8b5cf6; outline-offset: 2px; }
+
+* { scrollbar-color: #c4b5fd #f8fafc; scrollbar-width: thin; }
+
+.react-flow__controls { overflow: hidden; border: 1px solid #e2e8f0 !important; border-radius: 14px !important; box-shadow: 0 8px 24px rgba(30, 41, 59, 0.08) !important; }
+.react-flow__controls-button { border-bottom: 1px solid #eef2f7 !important; background: white !important; fill: #475569 !important; }
+.react-flow__minimap { overflow: hidden; border: 1px solid #e2e8f0; border-radius: 14px; box-shadow: 0 8px 24px rgba(30, 41, 59, 0.08); }
 
 h1, h2, h3 {
   font-family: "Manrope", system-ui, sans-serif;

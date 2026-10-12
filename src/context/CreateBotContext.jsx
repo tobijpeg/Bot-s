@@ -82,7 +82,7 @@ export function CreateBotProvider({ children }) {
   }), []);
 
   if (userId === undefined || loadedUserId !== userId) return <div className="flex min-h-screen items-center justify-center bg-canvas text-sm text-gray-500">Подготавливаем рабочее пространство…</div>;
-  return <CreateBotContext.Provider value={{ ...state, ...actions, templates }}>{children}</CreateBotContext.Provider>;
+  return <CreateBotContext.Provider value={{ ...state, ...actions, templates, userId }}>{children}</CreateBotContext.Provider>;
 }
 
 // eslint-disable-next-line react-refresh/only-export-components

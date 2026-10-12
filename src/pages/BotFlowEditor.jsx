@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { addEdge, Background, Controls, Handle, MiniMap, Position, ReactFlow, useEdgesState, useNodesState } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
@@ -17,13 +17,14 @@ function WorkflowNode({ data, selected }) {
   </div>;
 }
 const nodeTypes = { workflow: WorkflowNode };
+const editDraftKey = (userId, botId) => `bots-kz-editor-draft-v1:${userId}:${botId}`;
 
 export default function BotFlowEditor() {
   const navigate = useNavigate();
   const { botId: routeBotId } = useParams();
   const editing = Boolean(routeBotId);
   const context = useCreateBot();
-  const { botUsername, botName, category, templates, businessName, description, features, items, contacts, ownerTelegramId, greeting, workflow, setField, updateItem, addItem, removeItem, setContact } = context;
+  const { userId, botUsername, botName, category, templates, businessName, description, features, items, contacts, ownerTelegramId, greeting, workflow, setField, updateItem, addItem, removeItem, setContact } = context;
   const [nodes, setNodes, onNodesChange] = useNodesState(workflow.nodes);
   const [edges, setEdges, onEdgesChange] = useEdgesState(workflow.edges);
   const [selectedId, setSelectedId] = useState(null);
@@ -40,13 +41,24 @@ export default function BotFlowEditor() {
   const [scriptName, setScriptName] = useState("");
   const [scriptBusy, setScriptBusy] = useState(false);
   const [scriptMessage, setScriptMessage] = useState("");
+  const [toolTab, setToolTab] = useState("blocks");
+  const [inspectorTab, setInspectorTab] = useState("ai");
+  const [draftReadyBotId, setDraftReadyBotId] = useState(editing ? "" : "new");
+  const [draftRestored, setDraftRestored] = useState(false);
+  const [draftSaved, setDraftSaved] = useState(false);
+  const initialServerConfig = useRef(null);
+  const suppressDraftSave = useRef(false);
   const selectedNode = nodes.find((node) => node.id === selectedId);
+  const currentConfig = useMemo(() => ({ businessName, template: templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: { nodes, edges } }), [businessName, templates, category, description, greeting, features, items, contacts, ownerTelegramId, nodes, edges]);
   const kinds = useMemo(() => Object.entries(nodeKinds), []);
   const visibleKinds = kinds.filter(([kind, value]) => kind !== "start" && (blockCategory === "Все блоки" || nodeCategories[blockCategory]?.includes(kind)) && `${value.title} ${kind}`.toLowerCase().includes(blockSearch.trim().toLowerCase()));
 
   useEffect(() => {
     if (!editing) return;
     let alive = true;
+    suppressDraftSave.current = false;
+    setDraftReadyBotId("");
+    setDraftRestored(false);
     Promise.resolve().then(async () => {
       if (!supabase) throw new Error(supabaseSetupError());
       const { data: authData } = await supabase.auth.getSession();
@@ -58,19 +70,48 @@ export default function BotFlowEditor() {
       const config = bot.config || {};
       const templateKey = Object.keys(templates).find((key) => templates[key].label === config.template) || (config.template === "Своя структура" ? "custom" : "shop");
       const template = templates[templateKey] || {};
-      const nextWorkflow = config.workflow || createDefaultWorkflow();
+      const serverConfig = { businessName: config.businessName || "", template: templates[templateKey]?.label, description: config.description || "", greeting: config.greeting || template.greeting || "Здравствуйте! Добро пожаловать. Выберите действие, чтобы продолжить.", features: config.features || template.features || [], items: config.items || [], contacts: config.contacts || { hours: "", address: "", phone: "", language: "Русский и казахский" }, ownerTelegramId: config.ownerTelegramId || "", workflow: config.workflow || createDefaultWorkflow() };
+      let activeConfig = serverConfig;
+      let hasRestoredDraft = false;
+      try {
+        const draft = JSON.parse(localStorage.getItem(editDraftKey(userId, bot.id)) || "null");
+        const savedAt = Date.parse(draft?.savedAt || "") || 0;
+        const serverUpdatedAt = Date.parse(bot.updated_at || bot.created_at || "") || 0;
+        if (draft?.config && savedAt > serverUpdatedAt) { activeConfig = { ...serverConfig, ...draft.config }; hasRestoredDraft = true; }
+      } catch { /* Ignore a damaged local draft and use the server copy. */ }
+      const activeTemplateKey = Object.keys(templates).find((key) => templates[key].label === activeConfig.template) || templateKey;
       setField("botId", bot.id); setField("botUsername", bot.username); setField("botName", bot.botName); setField("verified", true); setField("status", bot.status);
-      setField("category", templateKey); setField("businessName", config.businessName || ""); setField("description", config.description || "");
-      setField("features", config.features || template.features || []); setField("items", config.items || []);
-      setField("contacts", config.contacts || { hours: "", address: "", phone: "", language: "Русский и казахский" });
-      setField("ownerTelegramId", config.ownerTelegramId || "");
-      setField("greeting", config.greeting || template.greeting || "Здравствуйте! Добро пожаловать. Выберите действие, чтобы продолжить."); setField("workflow", nextWorkflow);
-      setNodes(nextWorkflow.nodes); setEdges(nextWorkflow.edges);
+      setField("category", activeTemplateKey); setField("businessName", activeConfig.businessName); setField("description", activeConfig.description);
+      setField("features", activeConfig.features); setField("items", activeConfig.items);
+      setField("contacts", activeConfig.contacts); setField("ownerTelegramId", activeConfig.ownerTelegramId);
+      setField("greeting", activeConfig.greeting); setField("workflow", activeConfig.workflow);
+      setNodes(activeConfig.workflow.nodes); setEdges(activeConfig.workflow.edges);
+      initialServerConfig.current = serverConfig;
+      setDraftRestored(hasRestoredDraft);
+      setDraftReadyBotId(bot.id);
     }).catch((exception) => { if (alive) setError(exception.message); }).finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };
-  }, [editing, routeBotId, setField, setNodes, setEdges, templates]);
+  }, [editing, routeBotId, setField, setNodes, setEdges, templates, userId]);
 
   useEffect(() => { setField("workflow", { nodes, edges }); }, [nodes, edges, setField]);
+
+  useEffect(() => {
+    if (!editing || !userId || !routeBotId || draftReadyBotId !== routeBotId || suppressDraftSave.current || !initialServerConfig.current) return undefined;
+    const key = editDraftKey(userId, routeBotId);
+    const serialized = JSON.stringify(currentConfig);
+    if (serialized === JSON.stringify(initialServerConfig.current)) {
+      localStorage.removeItem(key);
+      setDraftSaved(false);
+      return undefined;
+    }
+    const timer = window.setTimeout(() => {
+      try {
+        localStorage.setItem(key, JSON.stringify({ savedAt: new Date().toISOString(), config: currentConfig }));
+        setDraftSaved(true);
+      } catch { setDraftSaved(false); }
+    }, 350);
+    return () => window.clearTimeout(timer);
+  }, [editing, userId, routeBotId, draftReadyBotId, currentConfig]);
 
   useEffect(() => {
     let active = true;
@@ -180,7 +221,7 @@ export default function BotFlowEditor() {
 
   async function save() {
     setSaving(true); setError(""); setSaved("");
-      const config = { businessName, template: templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: { nodes, edges } };
+    const config = currentConfig;
     if (!editing) {
       setField("workflow", config.workflow); setSaving(false); navigate("/create/setup"); return;
     }
@@ -190,6 +231,10 @@ export default function BotFlowEditor() {
       const response = await apiFetch(`/api/bots/${routeBotId}/config`, { method: "PUT", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session?.access_token || ""}` }, body: JSON.stringify(config) });
       const result = await response.json();
       if (!response.ok) throw new Error(result.error || "Не удалось сохранить настройки.");
+      suppressDraftSave.current = true;
+      initialServerConfig.current = config;
+      if (userId) localStorage.removeItem(editDraftKey(userId, routeBotId));
+      setDraftSaved(false); setDraftRestored(false);
       setField("status", result.bot.status);
       setSaved(result.bot.status === "Работает на сервере платформы"
         ? "Сценарий сохранён и применён к работающему боту в Telegram."
@@ -201,45 +246,67 @@ export default function BotFlowEditor() {
   if (loading) return <div className="rounded-2xl bg-white p-8 text-sm text-gray-500">Загружаю настройки бота…</div>;
 
   return <div className="max-w-[1500px]">
-    <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div><p className="text-xs font-semibold uppercase tracking-wide text-accent-600">{editing ? `Редактор · @${botUsername || "bot"}` : "Визуальный конструктор"}</p><h1 className="mt-1 font-display text-2xl font-bold text-navy-950">{editing ? "Редактирование бота" : "Собери сценарий из блоков"}</h1><p className="mt-1 text-sm text-gray-500">Опиши задачу или изменение — ИИ добавит блоки и связи прямо на схему. Клиентские ответы бот выполняет по сохранённым правилам.</p></div>
-      <div className="flex gap-2"><button onClick={() => navigate(editing ? "/bots" : "/create/structure")} className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700">Назад</button><button onClick={save} disabled={saving} className="rounded-xl bg-navy-950 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Сохраняю…" : editing ? "Сохранить изменения" : "Сохранить сценарий →"}</button></div>
+    <div className="flex h-auto min-h-[calc(100dvh-120px)] flex-col gap-3 xl:h-[calc(100dvh-105px)] xl:min-h-[540px]">
+      <header className="flex shrink-0 flex-wrap items-center justify-between gap-3 rounded-2xl border border-white/80 bg-white/90 px-4 py-3 shadow-sm shadow-slate-900/5 backdrop-blur">
+        <div className="min-w-0"><div className="flex flex-wrap items-center gap-2"><p className="text-[10px] font-bold uppercase tracking-[.16em] text-violet-700">{editing ? `Редактор · @${botUsername || "bot"}` : "Визуальный конструктор"}</p>{editing && <span className="rounded-full bg-emerald-50 px-2 py-1 text-[10px] font-semibold text-emerald-700">{botName || "Telegram-бот"}</span>}</div><h1 className="mt-0.5 font-display text-xl font-bold text-navy-950">{editing ? "Редактирование бота" : "Собери сценарий из блоков"}</h1></div>
+        <div className="flex items-center gap-2"><span className="hidden text-[11px] text-gray-400 sm:inline">{draftSaved ? "Черновик сохранён в этом браузере" : saved || "Изменения сохраняются в черновик"}</span><button onClick={() => navigate(editing ? "/bots" : "/create/structure")} className="rounded-xl border border-gray-200 bg-white px-3 py-2 text-xs font-semibold text-slate-700 transition hover:border-violet-200 hover:bg-violet-50">Назад</button><button onClick={save} disabled={saving} className="rounded-xl bg-navy-950 px-4 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-900 disabled:opacity-50">{saving ? "Сохраняю…" : editing ? "Сохранить" : "Продолжить →"}</button></div>
+      </header>
+
+      {draftRestored && <p role="status" className="shrink-0 rounded-xl border border-amber-200 bg-amber-50 px-4 py-2.5 text-xs text-amber-900">Восстановлен несохранённый черновик этого бота. Проверьте изменения и нажмите «Сохранить».</p>}
+
+      <section className="shrink-0 overflow-hidden rounded-2xl border border-white/80 bg-white/95 shadow-sm shadow-slate-900/5" data-tour-id="scenario-tools">
+        <div className="flex items-center gap-1 overflow-x-auto border-b border-slate-100 px-2 pt-2">
+          {[ ["blocks", "▦ Блоки"], ["examples", "✦ Примеры"], ["scripts", "↗ Мои процессы"] ].map(([key, label]) => <button key={key} onClick={() => setToolTab(key)} className={`shrink-0 rounded-t-xl px-4 py-2.5 text-xs font-semibold transition ${toolTab === key ? "bg-violet-50 text-violet-800" : "text-slate-500 hover:bg-slate-50 hover:text-slate-800"}`}>{label}</button>)}
+          <p className="ml-auto hidden pr-3 text-[10px] text-slate-400 xl:block">Перетащите блок на схему или нажмите, чтобы добавить</p>
+        </div>
+        {toolTab === "blocks" && <div className="space-y-2 p-3">
+          <div className="flex flex-wrap items-center gap-2"><input aria-label="Поиск блоков" value={blockSearch} onChange={(event) => setBlockSearch(event.target.value)} placeholder="Найти блок…" className="w-36 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-violet-300 sm:w-48"/><div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">{["Все блоки", ...Object.keys(nodeCategories)].map((name) => <button key={name} onClick={() => setBlockCategory(name)} className={`shrink-0 rounded-full px-2.5 py-1.5 text-[10px] font-medium ${blockCategory === name ? "bg-violet-700 text-white" : "bg-slate-100 text-slate-600 hover:bg-violet-50"}`}>{name}</button>)}</div></div>
+          <div className="grid max-h-[88px] grid-cols-2 gap-1.5 overflow-y-auto sm:grid-cols-4 xl:grid-cols-6">{visibleKinds.map(([kind, value]) => <button key={kind} onClick={() => addNode(kind)} className="flex min-w-0 items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2 text-left text-[11px] font-medium text-slate-700 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-900"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white text-sm shadow-sm">{value.icon}</span><span className="truncate">{value.title}</span><span className="ml-auto text-violet-500">＋</span></button>)}{visibleKinds.length === 0 && <p className="col-span-full px-2 py-3 text-xs text-gray-400">Нет блоков по запросу.</p>}</div>
+        </div>}
+        {toolTab === "examples" && <div className="grid max-h-32 grid-cols-2 gap-2 overflow-y-auto p-3 sm:grid-cols-4">{Object.entries(workflowPresets).map(([key, preset]) => <button key={key} onClick={() => applyPreset(key)} className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-left transition hover:border-violet-200 hover:bg-violet-50"><span className="block truncate text-xs font-semibold text-slate-800">{preset.label}</span><span className="mt-1 line-clamp-2 text-[10px] leading-4 text-gray-500">{preset.description}</span></button>)}</div>}
+        {toolTab === "scripts" && <div className="space-y-2 p-3" data-tour-id="personal-scripts">
+          <form onSubmit={(event) => { event.preventDefault(); saveScript(); }} className="flex gap-2"><input value={scriptName} onChange={(event) => setScriptName(event.target.value)} maxLength={80} placeholder="Название вашего процесса…" className="min-w-0 flex-1 rounded-lg border border-gray-200 bg-slate-50 px-3 py-2 text-xs"/><button disabled={!scriptName.trim() || scriptBusy} className="rounded-lg bg-violet-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{scriptBusy ? "Сохраняю…" : "Сохранить схему"}</button></form>
+          {scriptMessage && <p role="status" className="text-[11px] text-slate-600">{scriptMessage}</p>}
+          <div className="flex max-h-[78px] gap-2 overflow-x-auto">{myScripts.length ? myScripts.map((script) => <article key={script.id} className="min-w-56 rounded-xl border border-slate-100 bg-slate-50 p-2.5"><p className="truncate text-[11px] font-semibold text-slate-800">{script.name}</p><p className="mt-1 text-[10px] text-gray-500">{script.workflow?.nodes?.length || 0} блоков · {new Date(script.updated_at).toLocaleDateString("ru-RU")}</p><div className="mt-2 flex gap-1.5"><button onClick={() => applySavedScript(script, "insert")} className="rounded-md bg-violet-700 px-2 py-1 text-[10px] font-semibold text-white">Вставить</button><button onClick={() => applySavedScript(script, "replace")} className="rounded-md border border-gray-200 bg-white px-2 py-1 text-[10px] font-semibold">Открыть</button><button onClick={() => deleteScript(script)} className="px-1 text-[10px] text-red-600">Удалить</button></div></article>) : <p className="py-2 text-xs text-gray-400">Сохраните схему, чтобы использовать её в других ботах.</p>}</div>
+        </div>}
+      </section>
+
+      <div className="grid min-h-[680px] flex-1 grid-cols-1 gap-3 xl:min-h-0 xl:grid-cols-[minmax(0,1fr)_360px]" data-tour-id="scenario-editor">
+        <div className="relative min-h-[480px] overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-900/5 xl:min-h-0"><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onSelectionChange={({ nodes: selected }) => { setSelectedId(selected[0]?.id || null); if (selected[0]) setInspectorTab("node"); }} fitView fitViewOptions={{ padding: 0.2 }} deleteKeyCode={["Backspace", "Delete"]}><Background color="#ddd6fe" gap={22} /><MiniMap pannable zoomable /><Controls /></ReactFlow><span className="pointer-events-none absolute left-3 top-3 rounded-lg border border-slate-100 bg-white/90 px-2.5 py-1.5 text-[10px] font-semibold text-slate-500 shadow-sm">Сценарий · {nodes.length} блоков</span></div>
+        <aside className="flex min-h-[430px] min-w-0 flex-col overflow-hidden rounded-2xl border border-slate-200 bg-white shadow-sm shadow-slate-900/5 xl:min-h-0" data-tour-id="ai-builder-panel">
+          <div className="flex shrink-0 items-center gap-1 border-b border-slate-100 bg-slate-50/70 p-2">{[["ai", "✦ ИИ"], ["node", "▣ Свойства"], ["business", "⌂ Бизнес"]].map(([key, label]) => <button key={key} onClick={() => setInspectorTab(key)} className={`flex-1 rounded-lg px-2 py-2 text-xs font-semibold transition ${inspectorTab === key ? "bg-white text-violet-800 shadow-sm" : "text-slate-500 hover:bg-white/70"}`}>{label}</button>)}</div>
+          {inspectorTab === "ai" && <section className="flex min-h-0 flex-1 flex-col p-3" data-tour-id="ai-builder-panel-inner">
+            <div className="flex items-center gap-2"><span className="flex h-8 w-8 items-center justify-center rounded-xl bg-violet-100 text-violet-700">✦</span><div><h2 className="text-sm font-bold text-navy-950">ИИ-помощник</h2><p className="text-[10px] text-gray-500">Строит и меняет схему конструктора</p></div></div>
+            <div aria-live="polite" className="mt-3 min-h-24 flex-1 space-y-2 overflow-y-auto rounded-xl bg-slate-50 p-2.5">
+              {aiMessages.length === 0 && <p className="rounded-lg border border-violet-100 bg-white p-3 text-xs leading-5 text-gray-600">Опишите задачу обычными словами. ИИ расставит блоки и соединит шаги на схеме.</p>}
+              {aiMessages.map((message, index) => <p key={index} className={`whitespace-pre-line rounded-xl p-2.5 text-xs leading-5 ${message.role === "user" ? "ml-4 bg-violet-100 text-violet-950" : "mr-2 border border-slate-100 bg-white text-gray-700"}`}>{message.text}</p>)}
+              {aiBusy && <p className="px-2 text-xs text-gray-500">ИИ обновляет схему…</p>}
+            </div>
+            <form onSubmit={askAI} className="mt-3 shrink-0 space-y-2"><textarea aria-label="Попросить ИИ изменить сценарий" rows={3} maxLength={2000} value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="Например: добавь запись, спроси услугу и телефон…" className="w-full resize-y rounded-xl border border-slate-200 bg-white px-3 py-2.5 text-xs leading-5 outline-none focus:border-violet-400 focus:ring-2 focus:ring-violet-100"/><button type="submit" disabled={aiBusy || !aiPrompt.trim()} className="w-full rounded-xl bg-violet-700 px-3 py-2.5 text-xs font-semibold text-white shadow-sm transition hover:bg-violet-800 disabled:opacity-50">{aiBusy ? "Изменяю схему…" : "Применить к схеме"}</button></form>
+          </section>}
+          {inspectorTab === "node" && <section className="min-h-0 flex-1 overflow-y-auto p-4">
+            {selectedNode ? <><div className="flex items-center justify-between"><div><p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Блок сценария</p><h2 className="mt-1 text-sm font-bold text-navy-950">{nodeKinds[selectedNode.data.kind]?.icon} {nodeKinds[selectedNode.data.kind]?.title}</h2></div><button onClick={() => { setNodes((current) => current.filter((node) => node.id !== selectedId)); setEdges((current) => current.filter((edge) => edge.source !== selectedId && edge.target !== selectedId)); setSelectedId(null); }} disabled={selectedNode.data.kind === "start"} className="rounded-lg px-2 py-1 text-xs text-red-600 hover:bg-red-50 disabled:opacity-30">Удалить</button></div>
+              <Field label="Название блока" value={selectedNode.data.title || ""} onChange={(value) => updateSelected("title", value)} />
+              {["message", "fallback", "booking", "question", "condition", "delay", "notification", "link", "location", "document", "handoff", "payment", "feedback", "subscribe"].includes(selectedNode.data.kind) && <Field label="Текст для клиента" multiline value={selectedNode.data.text || ""} onChange={(value) => updateSelected("text", value)} />}
+              {selectedNode.data.kind === "delay" && <Field label="Пауза в секундах (0–300)" type="number" min={0} max={300} value={selectedNode.data.delaySeconds ?? 5} onChange={(value) => updateSelected("delaySeconds", Math.max(0, Math.min(300, Number(value) || 0)))} />}
+              {selectedNode.data.kind === "condition" && <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-gray-500">Этот блок показывает кнопки по исходящим связям. Подписи задаются на линиях.</p>}
+              {selectedNode.data.kind === "menu" && <p className="mt-3 rounded-xl bg-violet-50 p-3 text-xs leading-5 text-violet-900">Каждая связь из этого меню станет отдельной кнопкой в Telegram.</p>}
+              {selectedNode.data.kind === "document" && <p className="mt-3 rounded-xl bg-blue-50 p-3 text-xs leading-5 text-blue-900">Файлы появятся во «Входящих». Дополнительное Telegram-уведомление можно включить в настройках бизнеса.</p>}
+              {["catalog", "contacts"].includes(selectedNode.data.kind) && <p className="mt-3 rounded-xl bg-slate-50 p-3 text-xs leading-5 text-gray-500">Используются позиции и контакты из вкладки «Бизнес».</p>}
+              {selectedNode.data.kind === "keyword" && <Field label="Ключевые слова через запятую" value={selectedNode.data.keywords || ""} onChange={(value) => updateSelected("keywords", value)} />}
+              {["link", "payment"].includes(selectedNode.data.kind) && <Field label="HTTPS-ссылка" value={selectedNode.data.url || ""} onChange={(value) => updateSelected("url", value)} />}
+              {selectedNode.data.kind !== "start" && <Field label="Подпись кнопки" value={selectedNode.data.buttonLabel || ""} onChange={(value) => updateSelected("buttonLabel", value)} />}
+            </> : <div className="flex h-full min-h-48 flex-col items-center justify-center text-center"><span className="flex h-12 w-12 items-center justify-center rounded-2xl bg-violet-50 text-xl text-violet-700">▣</span><h2 className="mt-3 text-sm font-bold text-navy-950">Выберите блок</h2><p className="mt-1 max-w-56 text-xs leading-5 text-gray-500">Нажмите на блок на схеме, чтобы изменить текст, подпись и настройки.</p></div>}
+          </section>}
+          {inspectorTab === "business" && <section className="min-h-0 flex-1 space-y-4 overflow-y-auto p-4">
+            <div><p className="text-[10px] font-semibold uppercase tracking-wide text-violet-700">Профиль компании</p><h2 className="mt-1 text-sm font-bold text-navy-950">Данные бизнеса</h2><Field label="Название" value={businessName} onChange={(value) => setField("businessName", value)} /><Field label="Приветствие /start" multiline value={greeting} onChange={(value) => setField("greeting", value)} /><Field label="Адрес" value={contacts.address} onChange={(value) => setContact("address", value)} /><Field label="График" value={contacts.hours} onChange={(value) => setContact("hours", value)} /><Field label="Телефон" value={contacts.phone} onChange={(value) => setContact("phone", value)} /><Field label="Telegram ID уведомлений (необязательно)" value={ownerTelegramId} onChange={(value) => setField("ownerTelegramId", value.replace(/[^0-9-]/g, "").slice(0, 20))} /><p className="mt-2 rounded-lg bg-slate-50 p-2.5 text-[10px] leading-4 text-gray-500">Все обращения и документы доступны в разделе «Входящие».</p></div>
+            <div className="border-t border-slate-100 pt-3"><div className="flex items-center justify-between"><h2 className="text-sm font-bold text-navy-950">Товары и услуги · ₸</h2><button onClick={addItem} className="rounded-lg bg-violet-50 px-2.5 py-1.5 text-[11px] font-semibold text-violet-800 hover:bg-violet-100">＋ Добавить</button></div><div className="mt-2 space-y-2">{items.map((item, index) => <div key={index} className="grid grid-cols-[minmax(0,1fr)_72px_24px] items-center gap-1.5"><input aria-label="Название товара" value={item.name} onChange={(event) => updateItem(index, "name", event.target.value)} className="min-w-0 rounded-lg border border-gray-200 bg-slate-50 px-2 py-2 text-[11px]"/><input aria-label="Цена в тенге" type="number" min="0" value={item.price} onChange={(event) => updateItem(index, "price", Number(event.target.value))} className="w-full rounded-lg border border-gray-200 bg-slate-50 px-2 py-2 text-[11px]"/><button aria-label="Удалить позицию" onClick={() => removeItem(index)} className="rounded-md py-1 text-lg text-red-500 hover:bg-red-50">×</button></div>)}</div><p className="mt-2 text-[10px] leading-4 text-amber-700">Проверьте примерные цены шаблона перед запуском.</p></div>
+          </section>}
+        </aside>
+      </div>
+      <div className="flex shrink-0 flex-wrap items-center justify-between gap-2 rounded-xl border border-slate-200/80 bg-white/70 px-3 py-2 text-[10px] text-slate-500"><span>Опишите правки ИИ или соедините блоки на схеме.</span><span>{editing ? "Сохраните, чтобы применить изменения в Telegram." : "Черновик конструктора сохраняется в этом браузере."} ИИ не отвечает клиентам.</span></div>
+      {(error || saved) && <p role={error ? "alert" : "status"} className={`shrink-0 rounded-lg p-2.5 text-xs ${error ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>{error || saved}</p>}
     </div>
-    <section className="mb-3 space-y-3 rounded-xl border border-gray-100 bg-white p-3">
-      <div><h2 className="text-sm font-bold text-navy-950">Готовые примеры · необязательно</h2><p className="mt-1 text-xs text-gray-500">Можно выбрать пример или оставить свою структуру «{category === "custom" ? "Без шаблона" : templates[category]?.label || "Своя структура"}». Любой пример заменит текущую схему.</p></div>
-      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-3">{Object.entries(workflowPresets).map(([key, preset]) => <button key={key} onClick={() => applyPreset(key)} className="rounded-lg border border-gray-100 bg-gray-50 p-3 text-left hover:border-violet-200 hover:bg-violet-50"><span className="block text-xs font-semibold text-slate-800">{preset.label}</span><span className="mt-1 block text-[11px] leading-4 text-gray-500">{preset.description}</span></button>)}</div>
-    </section>
-    <section className="mb-3 space-y-3 rounded-xl border border-violet-100 bg-white p-3" data-tour-id="personal-scripts">
-      <div><h2 className="text-sm font-bold text-navy-950">Мои сценарии и процессы</h2><p className="mt-1 text-xs text-gray-500">Сохраните свою последовательность шагов и используйте её в других ботах. Это безопасные блоки конструктора, не произвольный программный код.</p></div>
-      <form onSubmit={(event) => { event.preventDefault(); saveScript(); }} className="flex gap-2"><input value={scriptName} onChange={(event) => setScriptName(event.target.value)} maxLength={80} placeholder="Например: приём заявки на ремонт" className="min-w-0 flex-1 rounded-lg border border-gray-200 px-3 py-2 text-xs"/><button disabled={!scriptName.trim() || scriptBusy} className="rounded-lg bg-violet-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-40">{scriptBusy ? "Сохраняю…" : "Сохранить текущий сценарий"}</button></form>
-      {scriptMessage && <p role="status" className="text-xs text-slate-600">{scriptMessage}</p>}
-      {myScripts.length > 0 && <div className="grid gap-2 sm:grid-cols-2">{myScripts.map((script) => <article key={script.id} className="rounded-lg border border-gray-100 bg-gray-50 p-3"><p className="truncate text-xs font-semibold text-slate-800">{script.name}</p><p className="mt-1 text-[11px] text-gray-500">{script.workflow?.nodes?.length || 0} шагов · обновлён {new Date(script.updated_at).toLocaleDateString("ru-RU")}</p><div className="mt-2 flex flex-wrap gap-2"><button onClick={() => applySavedScript(script, "insert")} className="rounded-md bg-violet-700 px-2.5 py-1.5 text-[11px] font-semibold text-white">Вставить процесс</button><button onClick={() => applySavedScript(script, "replace")} className="rounded-md border border-gray-200 bg-white px-2.5 py-1.5 text-[11px] font-semibold text-slate-700">Открыть целиком</button><button onClick={() => deleteScript(script)} className="ml-auto text-[11px] text-red-600">Удалить</button></div></article>)}</div>}
-    </section>
-    <section className="mb-3 space-y-3 rounded-xl border border-gray-100 bg-white p-3">
-      <div className="flex flex-wrap items-center justify-between gap-2"><div><h2 className="text-sm font-bold text-navy-950">Библиотека блоков</h2><p className="mt-1 text-xs text-gray-500">Выберите действие и соедините его с другими блоками.</p></div><input aria-label="Поиск блоков" value={blockSearch} onChange={(event) => setBlockSearch(event.target.value)} placeholder="Найти блок…" className="w-full rounded-lg border border-gray-200 px-3 py-2 text-xs sm:w-52" /></div>
-      <div className="flex flex-wrap gap-1.5"><button onClick={() => setBlockCategory("Все блоки")} className={`rounded-full px-3 py-1.5 text-xs ${blockCategory === "Все блоки" ? "bg-violet-700 text-white" : "bg-gray-100 text-gray-600"}`}>Все блоки</button>{Object.keys(nodeCategories).map((name) => <button key={name} onClick={() => setBlockCategory(name)} className={`rounded-full px-3 py-1.5 text-xs ${blockCategory === name ? "bg-violet-700 text-white" : "bg-gray-100 text-gray-600"}`}>{name}</button>)}</div>
-      <div className="flex flex-wrap gap-2">{visibleKinds.map(([kind, value]) => <button key={kind} onClick={() => addNode(kind)} className="rounded-lg bg-gray-50 px-3 py-2 text-xs font-medium text-slate-700 hover:bg-violet-50 hover:text-violet-800">+ {value.icon} {value.title}</button>)}{visibleKinds.length === 0 && <p className="text-xs text-gray-400">Нет блоков по запросу.</p>}</div>
-    </section>
-    <div className="grid grid-cols-1 gap-3 xl:grid-cols-[minmax(520px,1fr)_360px]" data-tour-id="scenario-editor">
-      <div className="h-[620px] overflow-hidden rounded-2xl border border-gray-200 bg-slate-50 shadow-sm"><ReactFlow nodes={nodes} edges={edges} nodeTypes={nodeTypes} onNodesChange={onNodesChange} onEdgesChange={onEdgesChange} onConnect={onConnect} onSelectionChange={({ nodes: selected }) => setSelectedId(selected[0]?.id || null)} fitView fitViewOptions={{ padding: 0.2 }} deleteKeyCode={["Backspace", "Delete"]}><Background color="#cbd5e1" gap={22} /><MiniMap pannable zoomable /><Controls /></ReactFlow></div>
-      <aside className="max-h-[620px] space-y-4 overflow-y-auto rounded-2xl border border-gray-100 bg-white p-4 shadow-sm" data-tour-id="ai-builder-panel">
-        <section className="rounded-xl border border-violet-100 bg-violet-50/60 p-3" data-tour-id="ai-builder-panel-inner">
-          <div className="flex items-center gap-2"><span className="flex h-7 w-7 items-center justify-center rounded-lg bg-violet-100 text-violet-700">✦</span><div><h2 className="text-sm font-bold text-navy-950">ИИ-конструктор сценария</h2><p className="text-[10px] text-gray-500">ИИ изменяет схему, бот отвечает по ней</p></div></div>
-          <div aria-live="polite" className="mt-3 max-h-48 space-y-2 overflow-y-auto">
-            {aiMessages.length === 0 && <p className="rounded-lg bg-white p-2.5 text-xs leading-5 text-gray-600">Напиши, что нужно построить: «Добавь запись на услугу: спроси дату и телефон, затем покажи контакты».</p>}
-            {aiMessages.map((message, index) => <p key={index} className={`whitespace-pre-line rounded-lg p-2.5 text-xs leading-5 ${message.role === "user" ? "ml-5 bg-violet-100 text-violet-950" : "mr-3 bg-white text-gray-700"}`}>{message.text}</p>)}
-            {aiBusy && <p className="text-xs text-gray-500">ИИ обновляет узлы и связи…</p>}
-          </div>
-          <form onSubmit={askAI} className="mt-3 space-y-2"><textarea aria-label="Попросить ИИ изменить сценарий" rows={3} maxLength={2000} value={aiPrompt} onChange={(event) => setAiPrompt(event.target.value)} placeholder="Опиши изменение сценария…" className="w-full resize-y rounded-lg border border-violet-100 bg-white px-3 py-2 text-xs leading-5 outline-none focus:border-violet-400" /><button type="submit" disabled={aiBusy || !aiPrompt.trim()} className="w-full rounded-lg bg-violet-700 px-3 py-2 text-xs font-semibold text-white disabled:opacity-50">{aiBusy ? "Изменяю сценарий…" : "Применить к схеме"}</button></form>
-        </section>
-        {selectedNode ? <section><div className="flex items-center justify-between"><h2 className="text-sm font-bold text-navy-950">{nodeKinds[selectedNode.data.kind]?.icon} Настройки блока</h2><button onClick={() => { setNodes((current) => current.filter((node) => node.id !== selectedId)); setEdges((current) => current.filter((edge) => edge.source !== selectedId && edge.target !== selectedId)); setSelectedId(null); }} disabled={selectedNode.data.kind === "start"} className="text-xs text-red-600 disabled:opacity-30">Удалить</button></div><Field label="Название блока" value={selectedNode.data.title || ""} onChange={(value) => updateSelected("title", value)} />{["message", "fallback", "booking", "question", "condition", "delay", "notification", "link", "location", "document", "handoff", "payment", "feedback", "subscribe"].includes(selectedNode.data.kind) && <Field label="Текст / инструкция клиенту" multiline value={selectedNode.data.text || ""} onChange={(value) => updateSelected("text", value)} />}{selectedNode.data.kind === "delay" && <Field label="Пауза в секундах (0–300)" type="number" min={0} max={300} value={selectedNode.data.delaySeconds ?? 5} onChange={(value) => updateSelected("delaySeconds", Math.max(0, Math.min(300, Number(value) || 0)))} />}{selectedNode.data.kind === "condition" && <p className="mt-3 text-xs leading-5 text-gray-500">Этот блок показывает кнопки по всем исходящим связям. Подписи вариантов задаются на линиях между блоками.</p>}{selectedNode.data.kind === "menu" && <p className="mt-3 text-xs leading-5 text-gray-500">Подключи к этому блоку другие узлы. Каждый выход станет кнопкой в меню бота.</p>}{selectedNode.data.kind === "document" && <p className="mt-3 text-xs leading-5 text-gray-500">Файлы и заявки сохраняются в разделе «Входящие». Укажите Telegram ID только если хотите получать дублирующие уведомления в личный Telegram.</p>}{["catalog", "contacts"].includes(selectedNode.data.kind) && <p className="mt-3 text-xs leading-5 text-gray-500">Блок покажет каталог или контакты, которые указаны в настройках бизнеса ниже.</p>}{selectedNode.data.kind === "keyword" && <Field label="Ключевые слова через запятую" value={selectedNode.data.keywords || ""} onChange={(value) => updateSelected("keywords", value)} />}{["link", "payment"].includes(selectedNode.data.kind) && <Field label="HTTPS-ссылка" value={selectedNode.data.url || ""} onChange={(value) => updateSelected("url", value)} />}{selectedNode.data.kind !== "start" && <Field label="Текст кнопки" value={selectedNode.data.buttonLabel || ""} onChange={(value) => updateSelected("buttonLabel", value)} />}</section> : <section><h2 className="text-sm font-bold text-navy-950">Как пользоваться схемой</h2><p className="mt-2 text-xs leading-5 text-gray-500">Перетаскивай узлы по полотну. Потяни за кружок справа у блока, чтобы соединить его с кружком слева у следующего. Нажми на блок для его настройки.</p></section>}
-        <section className="border-t border-gray-100 pt-4"><h2 className="text-sm font-bold text-navy-950">Данные бизнеса</h2><Field label="Название" value={businessName} onChange={(value) => setField("businessName", value)} /><Field label="Приветствие /start" multiline value={greeting} onChange={(value) => setField("greeting", value)} /><Field label="Адрес" value={contacts.address} onChange={(value) => setContact("address", value)} /><Field label="График" value={contacts.hours} onChange={(value) => setContact("hours", value)} /><Field label="Телефон" value={contacts.phone} onChange={(value) => setContact("phone", value)} /><Field label="Telegram ID для дополнительных уведомлений" value={ownerTelegramId} onChange={(value) => setField("ownerTelegramId", value.replace(/[^0-9-]/g, "").slice(0, 20))} /><p className="mt-1 text-[11px] leading-4 text-gray-500">Необязательно: укажите ID, если хотите получать копии уведомлений в Telegram. Все обращения доступны в разделе «Входящие».</p></section>
-        <section className="border-t border-gray-100 pt-4"><div className="flex items-center justify-between"><h2 className="text-sm font-bold text-navy-950">Товары / услуги · ₸</h2><button onClick={addItem} className="text-xs font-semibold text-accent-600">+ Добавить</button></div>{items.map((item, index) => <div key={index} className="mt-2 grid grid-cols-[1fr_76px_24px] items-center gap-1"><input aria-label="Название товара" value={item.name} onChange={(event) => updateItem(index, "name", event.target.value)} className="min-w-0 rounded-lg border border-gray-200 px-2 py-2 text-xs" /><input aria-label="Цена в тенге" type="number" min="0" value={item.price} onChange={(event) => updateItem(index, "price", Number(event.target.value))} className="w-full rounded-lg border border-gray-200 px-2 py-2 text-xs" /><button aria-label="Удалить позицию" onClick={() => removeItem(index)} className="text-lg text-red-500">×</button></div>)}<p className="mt-2 text-[11px] leading-4 text-amber-700">Проверь цены: шаблонные позиции — примеры, а не цены твоей компании.</p></section>
-      </aside>
-    </div>
-    {(error || saved) && <p role={error ? "alert" : "status"} className={`mt-3 rounded-lg p-3 text-sm ${error ? "bg-red-50 text-red-700" : "bg-green-50 text-green-700"}`}>{error || saved}</p>}
-    {!editing && <p className="mt-3 text-xs text-gray-400">После сценария добавь реальные позиции и контакты, затем запусти бота.</p>}
-    {editing && <p className="mt-3 text-xs text-gray-400">Изменения сразу применятся к запущенному боту. ИИ не отвечает на клиентские сообщения.</p>}
     <p className="sr-only">Основа: {category === "custom" ? "пользовательская структура" : templates[category]?.label}; подключённый бот: {botName}</p>
   </div>;
 }

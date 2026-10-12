@@ -42,15 +42,15 @@ export default function Sidebar() {
     checkAdmin();
     return () => { active = false; window.clearInterval(timer); };
   }, []);
-  if (!supabase) return <aside className="w-60 shrink-0 border-r border-gray-200 bg-white px-4 py-6"><div className="px-2"><Logo /></div><div className="mt-8 rounded-xl bg-amber-50 p-4"><p className="text-sm font-semibold text-amber-950">Подключите Supabase</p><p className="mt-2 text-xs leading-5 text-amber-900">Создайте .env из .env.example, укажите URL и publishable key, примените supabase/schema.sql и перезапустите приложение.</p></div></aside>;
+  if (!supabase) return <aside className="shrink-0 border-b border-gray-200 bg-white px-4 py-3 lg:sticky lg:top-0 lg:h-dvh lg:w-60 lg:border-b-0 lg:border-r lg:px-5 lg:py-6"><div className="px-1"><Logo /></div><div className="mt-5 rounded-xl bg-amber-50 p-4"><p className="text-sm font-semibold text-amber-950">Подключите Supabase</p><p className="mt-2 text-xs leading-5 text-amber-900">Создайте .env из .env.example, укажите URL и publishable key, примените supabase/schema.sql и перезапустите приложение.</p></div></aside>;
 
   return (
-    <aside className="w-60 shrink-0 border-r border-gray-200 bg-white px-4 py-6">
-      <div className="px-2">
+    <aside className="z-20 shrink-0 border-b border-gray-200/80 bg-white/95 px-3 py-3 backdrop-blur lg:sticky lg:top-0 lg:h-dvh lg:w-60 lg:border-b-0 lg:border-r lg:px-4 lg:py-6">
+      <div className="px-1 lg:px-2">
         <Logo />
       </div>
 
-      <nav className="mt-8 flex flex-col gap-1">
+      <nav className="mt-3 flex gap-1 overflow-x-auto pb-1 lg:mt-8 lg:flex-col lg:overflow-visible lg:pb-0">
         {[...links, ...(isAdmin ? [{ to: "/admin/onboarding", label: "Анкеты пользователей" }] : [])].map((link) => (
           <NavLink
             key={link.to}
@@ -59,9 +59,9 @@ export default function Sidebar() {
               const active =
                 isActive || (link.matchPrefix && location.pathname.startsWith(link.matchPrefix));
               return [
-                "rounded-lg px-3 py-2 text-sm font-medium transition-colors",
+                "flex shrink-0 items-center rounded-xl px-3 py-2.5 text-sm font-medium transition-colors",
                 active
-                  ? "bg-accent-500/10 text-accent-600"
+                  ? "bg-accent-500/10 text-accent-700 shadow-sm shadow-violet-900/5"
                   : "text-gray-600 hover:bg-gray-50 hover:text-navy-950",
               ].join(" ");
             }}
