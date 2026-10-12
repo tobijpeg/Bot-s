@@ -5,7 +5,7 @@ import "@xyflow/react/dist/style.css";
 import { useCreateBot } from "../context/CreateBotContext.jsx";
 import { useSitePreferences } from "../context/SitePreferencesContext.jsx";
 import { createDefaultWorkflow, nodeCategories, nodeKinds, workflowPresets } from "../workflow.js";
-import { cleanTemplateDataForGeneratedWorkflow, getWorkflowClarificationQuestions, isAllFeatureRequest, isWorkflowCreationRequest } from "../workflow-ai.js";
+import { classifyBuilderMessage, cleanTemplateDataForGeneratedWorkflow, getBuilderGateReply, isAllFeatureRequest, isBuilderCreationIntent, isBuilderEditRequest, isWorkflowCreationRequest, sanitizeBuilderText, shouldAskBuilderClarification } from "../workflow-ai.js";
 import { supabase, supabaseSetupError } from "../lib/supabase.js";
 import { apiFetch } from "../lib/api.js";
 
@@ -23,24 +23,24 @@ const editDraftKey = (userId, botId) => `bots-kz-editor-draft-v1:${userId}:${bot
 const AI_BUILDER_COPY = {
   ru: {
     title: "ИИ-помощник", subtitle: "Строит и меняет схему конструктора",
-    intro: "Хорошо, подготовлю сценарий под ваш бизнес. Перед построением уточню пару деталей — ответьте одним сообщением:",
-    initialHint: "Опишите задачу бизнеса обычными словами. Для нового сценария сначала уточню пару деталей, затем построю шаги и тексты прямо на схеме.",
+    intro: "Чтобы собрать подходящий сценарий, уточню детали:",
+    initialHint: "Опишите задачу бизнеса обычными словами. Я помогу только с созданием и настройкой Telegram-бота, сохраню ваши ответы и учту их при построении.",
     placeholder: "Например: создай запись для студии массажа…", answerPlaceholder: "Ответьте на оба вопроса одним сообщением…",
     submit: "Применить к схеме", answerSubmit: "Отправить ответы и построить", skip: "Построить без уточнений", busy: "Изменяю схему…", working: "ИИ строит сценарий…",
     applied: "Изменения уже применены к схеме — проверьте её и нажмите «Сохранить сценарий».", error: "Не получилось изменить сценарий:", sessionExpired: "Сессия аккаунта истекла. Войдите в аккаунт снова и повторите запрос.",
   },
   kk: {
     title: "ИИ көмекші", subtitle: "Конструктор сызбасын құрады және өзгертеді",
-    intro: "Бизнесіңізге сай сценарий дайындаймын. Құрастыру алдында екі сұрақты нақтылаймын — екеуіне бір хабарламада жауап беріңіз:",
-    initialHint: "Бот бизнесіңізге қалай көмектесуі керегін қарапайым сөзбен жазыңыз. Жаңа сценарий жасамас бұрын екі сұрақ қойып, қадамдар мен мәтіндерді сызбаға қосамын.",
+    intro: "Сәйкес сценарий құрастыру үшін нақтылайын:",
+    initialHint: "Бизнес міндетін қарапайым сөзбен жазыңыз. Мен тек Telegram-ботты құруға және баптауға көмектесемін, жауаптарыңызды сақтап, сценарийде ескеремін.",
     placeholder: "Мысалы: массаж студиясына жазылу ботын жаса…", answerPlaceholder: "Екі сұраққа бір хабарламада жауап беріңіз…",
     submit: "Сызбаға қолдану", answerSubmit: "Жауап беріп, сценарий құру", skip: "Сұрақтарсыз құру", busy: "Сценарий өзгертілуде…", working: "ИИ сценарий құрып жатыр…",
     applied: "Өзгерістер сызбаға қосылды. Тексеріп, «Сценарийді сақтау» батырмасын басыңыз.", error: "Сценарийді өзгерту мүмкін болмады:", sessionExpired: "Аккаунт сессиясының мерзімі аяқталды. Қайта кіріп, сұрауды қайталаңыз.",
   },
   en: {
     title: "AI assistant", subtitle: "Builds and updates the workflow",
-    intro: "I’ll tailor the workflow to your business. Before building it, I need two details. Reply to both in one message:",
-    initialHint: "Describe what your business needs in plain language. For a new workflow, I’ll ask two quick questions, then build its steps and copy on the canvas.",
+    intro: "To build the right workflow, I need to clarify:",
+    initialHint: "Describe your business task in plain language. I only help create and configure Telegram bots, and I’ll keep your answers in context while building.",
     placeholder: "For example: create bookings for my massage studio…", answerPlaceholder: "Answer both questions in one message…",
     submit: "Apply to workflow", answerSubmit: "Send answers and build", skip: "Build without questions", busy: "Updating workflow…", working: "AI is building the workflow…",
     applied: "The changes are on the canvas. Review them, then select “Save workflow”.", error: "Could not update the workflow:", sessionExpired: "Your sign-in session expired. Sign in again and retry.",
@@ -78,6 +78,7 @@ export default function BotFlowEditor() {
   const [aiMessages, setAiMessages] = useState([]);
   const [aiClarification, setAiClarification] = useState(null);
   const [aiBusy, setAiBusy] = useState(false);
+  const [aiMemoryReadyKey, setAiMemoryReadyKey] = useState("");
   const [blockCategory, setBlockCategory] = useState("Все блоки");
   const [blockSearch, setBlockSearch] = useState("");
   const [myScripts, setMyScripts] = useState([]);
@@ -91,9 +92,70 @@ export default function BotFlowEditor() {
   const [draftSaved, setDraftSaved] = useState(false);
   const initialServerConfig = useRef(null);
   const suppressDraftSave = useRef(false);
+  const aiSessionKey = String(userId || "anonymous") + ":" + String(routeBotId || "new");
   const selectedNode = nodes.find((node) => node.id === selectedId);
   const currentConfig = useMemo(() => ({ businessName, template: category === "custom" ? "Своя структура" : templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: cleanWorkflow(nodes, edges) }), [businessName, templates, category, description, greeting, features, items, contacts, ownerTelegramId, nodes, edges]);
   const kinds = useMemo(() => Object.entries(nodeKinds), []);
+
+  useEffect(() => {
+    if (!userId) {
+      setAiMessages([]);
+      setAiClarification(null);
+      setAiMemoryReadyKey(aiSessionKey);
+      return undefined;
+    }
+    let active = true;
+    const sessionKey = routeBotId || "new";
+    const storageKey = "bots-kz-ai-builder-v1:" + userId + ":" + sessionKey;
+    setAiMemoryReadyKey("");
+    (async () => {
+      let memory = null;
+      try {
+        memory = JSON.parse(localStorage.getItem(storageKey) || "null");
+      } catch { /* Use the Supabase copy when local storage is damaged. */ }
+      try {
+        const { data, error: loadError } = await supabase.from("ai_builder_sessions").select("messages,context,updated_at").eq("owner_id", userId).eq("session_key", sessionKey).maybeSingle();
+        if (!loadError && data && (!memory?.savedAt || (Date.parse(data.updated_at || "") || 0) >= (Date.parse(memory.savedAt) || 0))) memory = { messages: data.messages, clarification: data.context?.clarification || null, savedAt: data.updated_at };
+      } catch { /* Older deployments keep the same user-scoped memory in this browser. */ }
+      if (!active) return;
+      const messages = Array.isArray(memory?.messages)
+        ? memory.messages.slice(-40).filter((message) => ["user", "assistant"].includes(message?.role) && typeof message?.text === "string").map((message) => ({ role: message.role, text: sanitizeBuilderText(message.text, 1200) }))
+        : [];
+      const clarification = memory?.clarification && typeof memory.clarification.original === "string"
+        ? { original: sanitizeBuilderText(memory.clarification.original, 1200), questions: Array.isArray(memory.clarification.questions) ? memory.clarification.questions.slice(0, 2).map((item) => sanitizeBuilderText(item, 320)) : [], answers: Array.isArray(memory.clarification.answers) ? memory.clarification.answers.slice(-4).map((item) => sanitizeBuilderText(item, 900)) : [] }
+        : null;
+      setAiMessages(messages);
+      setAiClarification(clarification);
+      setAiMemoryReadyKey(aiSessionKey);
+    })();
+    return () => { active = false; };
+  }, [userId, routeBotId, aiSessionKey]);
+
+  useEffect(() => {
+    if (!userId || aiMemoryReadyKey !== aiSessionKey) return undefined;
+    const sessionKey = routeBotId || "new";
+    const storageKey = "bots-kz-ai-builder-v1:" + userId + ":" + sessionKey;
+    const safeMessages = aiMessages.slice(-40).map((message) => ({ role: message.role, text: sanitizeBuilderText(message.text, 1200) }));
+    const safeClarification = aiClarification ? {
+      original: sanitizeBuilderText(aiClarification.original, 1200),
+      questions: (aiClarification.questions || []).slice(0, 2).map((item) => sanitizeBuilderText(item, 320)),
+      answers: (aiClarification.answers || []).slice(-4).map((item) => sanitizeBuilderText(item, 900)),
+    } : null;
+    const savedAt = new Date().toISOString();
+    try { localStorage.setItem(storageKey, JSON.stringify({ messages: safeMessages, clarification: safeClarification, savedAt })); } catch { /* Continue with Supabase persistence. */ }
+    const timeout = setTimeout(async () => {
+      try {
+        await supabase.from("ai_builder_sessions").upsert({
+          owner_id: userId,
+          session_key: sessionKey,
+          messages: safeMessages,
+          context: { clarification: safeClarification, ownerRequests: safeMessages.filter((message) => message.role === "user").slice(-8).map((message) => message.text) },
+          updated_at: savedAt,
+        }, { onConflict: "owner_id,session_key" });
+      } catch { /* The browser copy remains available if the new table is not deployed yet. */ }
+    }, 450);
+    return () => clearTimeout(timeout);
+  }, [aiMessages, aiClarification, userId, routeBotId, aiMemoryReadyKey, aiSessionKey]);
   const visibleKinds = kinds.filter(([kind, value]) => kind !== "start" && (blockCategory === "Все блоки" || nodeCategories[blockCategory]?.includes(kind)) && `${value.title} ${kind}`.toLowerCase().includes(blockSearch.trim().toLowerCase()));
 
   useEffect(() => {
@@ -242,18 +304,24 @@ export default function BotFlowEditor() {
     setNodes((current) => current.map((node) => node.id === selectedId ? { ...node, data: { ...node.data, [field]: value } } : node));
   }
 
-  async function requestAIScenario(question) {
+  async function requestAIScenario(question, conversation = []) {
     setAiBusy(true); setError("");
     try {
       if (!supabase) throw new Error(supabaseSetupError());
       const { data: authData } = await supabase.auth.getSession();
       if (!authData.session) throw new Error("Сессия Supabase истекла. Войдите заново.");
-      const creating = isWorkflowCreationRequest(question) || isAllFeatureRequest(question);
+      const creating = isWorkflowCreationRequest(question) || (!editing && isBuilderCreationIntent(question)) || isAllFeatureRequest(question);
       const template = templates[category];
       const promptDescription = creating && description === template?.description ? "" : description;
-      const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session.access_token}` }, body: JSON.stringify({ question, workflow: { nodes, edges }, context: { description: promptDescription, businessName, template: creating ? "Своя структура" : template?.label, language: contacts?.language || "", interfaceLanguage: siteLanguage, ownerTelegramId } }) });
+      const requestContext = { description: sanitizeBuilderText(promptDescription, 1500), businessName: sanitizeBuilderText(businessName, 200), template: creating ? "Своя структура" : template?.label, creating, language: contacts?.language || "", interfaceLanguage: siteLanguage, ownerTelegramId };
+      const safeConversation = conversation.slice(-8).map((entry) => sanitizeBuilderText(entry, 700)).filter(Boolean);
+      const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token }, body: JSON.stringify({ action: "build", question: sanitizeBuilderText(question, 2000), conversation: safeConversation, workflow: { nodes, edges }, context: requestContext }) });
       const result = await response.json();
       if (!response.ok) throw new Error(response.status === 401 ? aiCopy.sessionExpired : result.error || "ИИ не смог изменить сценарий.");
+      if (result.ignored || !result.workflow) {
+        setAiMessages((current) => [...current, { role: "assistant", text: result.answer || getBuilderGateReply("off_topic", siteLanguage) }]);
+        return;
+      }
       setNodes(result.workflow.nodes); setEdges(result.workflow.edges); setSelectedId(null);
       if (result.createdFromScratch) {
         const cleaned = cleanTemplateDataForGeneratedWorkflow({ description, features, items, contacts, template });
@@ -271,28 +339,83 @@ export default function BotFlowEditor() {
     } finally { setAiBusy(false); }
   }
 
+  async function requestAIClarification(question, conversation = []) {
+    setAiBusy(true);
+    try {
+      if (!supabase) throw new Error(supabaseSetupError());
+      const { data: authData } = await supabase.auth.getSession();
+      if (!authData.session) throw new Error("Сессия Supabase истекла. Войдите заново.");
+      const template = templates[category];
+      const promptDescription = description === template?.description ? "" : description;
+      const response = await apiFetch("/api/ai/workflow", {
+        method: "POST",
+        headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token },
+        body: JSON.stringify({
+          action: "clarify",
+          question: sanitizeBuilderText(question, 1200),
+          conversation: conversation.slice(-8).map((entry) => sanitizeBuilderText(entry, 700)).filter(Boolean),
+          workflow: { nodes, edges },
+          context: {
+            description: sanitizeBuilderText(promptDescription, 900),
+            businessName: sanitizeBuilderText(businessName, 200),
+            template: "Своя структура",
+            creating: true,
+            language: contacts?.language || "",
+            interfaceLanguage: siteLanguage,
+          },
+        }),
+      });
+      const result = await response.json();
+      if (!response.ok) throw new Error(response.status === 401 ? aiCopy.sessionExpired : result.error || "ИИ не смог подготовить уточняющие вопросы.");
+      if (result.ignored) {
+        setAiMessages((current) => [...current, { role: "assistant", text: result.answer || getBuilderGateReply("off_topic", siteLanguage) }]);
+        return;
+      }
+      const questions = Array.isArray(result.questions) ? result.questions.slice(0, 2) : [];
+      if (questions.length < 2) throw new Error("ИИ не вернул два уточняющих вопроса. Попробуйте сформулировать задачу подробнее.");
+      setAiClarification({ original: question, questions, answers: [] });
+      setAiMessages((current) => [...current, { role: "assistant", text: result.answer + "\n\n1. " + questions[0] + "\n\n2. " + questions[1] }]);
+    } catch (exception) {
+      setAiMessages((current) => [...current, { role: "assistant", text: aiCopy.error + " " + exception.message }]);
+    } finally { setAiBusy(false); }
+  }
+
   async function askAI(event) {
     event.preventDefault();
-    const input = aiPrompt.trim();
+    const input = sanitizeBuilderText(aiPrompt.trim(), 2000);
     if (!input || aiBusy) return;
     setAiPrompt("");
     setAiMessages((current) => [...current, { role: "user", text: input }]);
 
+    const intent = classifyBuilderMessage(input, { hasPendingClarification: Boolean(aiClarification) });
+    if (intent !== "builder") {
+      setAiMessages((current) => [...current, { role: "assistant", text: getBuilderGateReply(intent, siteLanguage) }]);
+      return;
+    }
+
+    const conversation = [...aiMessages.filter((message) => message.role === "user").map((message) => message.text), input].slice(-8);
     if (aiClarification) {
-      const { original } = aiClarification;
+      const { original, answers = [] } = aiClarification;
+      const allAnswers = [...answers, input].slice(-4);
       setAiClarification(null);
-      await requestAIScenario(`${original.slice(0, 800)}\nУточнения владельца: ${input.slice(0, 900)}\nВыполни исходную просьбу с учётом уточнений; заполни тексты блоков и подписи кнопок под бизнес.`);
+      const clarificationText = allAnswers.map((answer, index) => (index + 1) + ". " + answer).join("\n");
+      const task = sanitizeBuilderText(original + "\nОтветы владельца на уточняющие вопросы:\n" + clarificationText + "\nВыполни исходную просьбу строго с учётом этих ответов. Сохрани бизнес, цель, данные и следующий шаг; не переспрашивай уже сообщённое.", 2000);
+      await requestAIScenario(task, conversation);
       return;
     }
 
-    if (isWorkflowCreationRequest(input) || (!editing && isAllFeatureRequest(input))) {
-      const questions = getWorkflowClarificationQuestions(input, { businessName, description, template: templates[category]?.label, locale: siteLanguage });
-      setAiClarification({ original: input, questions });
-      setAiMessages((current) => [...current, { role: "assistant", text: `${aiCopy.intro}\n\n1. ${questions[0]}\n\n2. ${questions[1]}` }]);
+    const creationIntent = isWorkflowCreationRequest(input) || (!editing && isBuilderCreationIntent(input)) || (!editing && isAllFeatureRequest(input));
+    if (creationIntent && !editing && shouldAskBuilderClarification(input)) {
+      await requestAIClarification(input, conversation);
       return;
     }
 
-    await requestAIScenario(input);
+    if (!aiClarification && !isWorkflowCreationRequest(input) && !(editing ? isBuilderEditRequest(input) : isBuilderCreationIntent(input)) && !isAllFeatureRequest(input)) {
+      setAiMessages((current) => [...current, { role: "assistant", text: getBuilderGateReply("need_task", siteLanguage) }]);
+      return;
+    }
+
+    await requestAIScenario(input, conversation);
   }
 
   function skipAIClarification() {
@@ -300,7 +423,8 @@ export default function BotFlowEditor() {
     const { original } = aiClarification;
     setAiClarification(null);
     setAiMessages((current) => [...current, { role: "assistant", text: siteLanguage === "en" ? "I’ll build from your initial description. If a business detail is missing, the bot will ask the customer for it." : siteLanguage === "kk" ? "Алғашқы сипаттамаңыз бойынша құрамын. Мәлімет жетіспесе, бот клиенттен оны сұрайды." : "Построю по вашему первому описанию. Если данных не хватает, бот попросит клиента сообщить их в диалоге." }]);
-    void requestAIScenario(original);
+    const conversation = aiMessages.filter((message) => message.role === "user").map((message) => message.text).slice(-8);
+    void requestAIScenario(original, conversation);
   }
 
   async function save() {

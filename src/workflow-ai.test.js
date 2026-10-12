@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createDefaultWorkflow, nodeKinds, workflowPresets } from "./workflow.js";
-import { applyWorkflowOperations, cleanTemplateDataForGeneratedWorkflow, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getWorkflowClarificationQuestions, isAllFeatureRequest, isWorkflowCreationRequest, normalizeGeneratedNode } from "./workflow-ai.js";
+import { applyWorkflowOperations, classifyBuilderMessage, cleanTemplateDataForGeneratedWorkflow, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getBuilderGateReply, getWorkflowClarificationQuestions, isAllFeatureRequest, isBuilderCreationIntent, isWorkflowCreationRequest, normalizeBuilderClarificationQuestions, normalizeGeneratedNode, sanitizeBuilderText, shouldAskBuilderClarification } from "./workflow-ai.js";
 
 const block = (id, kind, title, text, buttonLabel = title) => ({ id, kind, title, text, buttonLabel, keywords: "" });
 
@@ -10,6 +10,11 @@ test("creation requests start from a clean personal flow while explicit edits ke
   assert.equal(isWorkflowCreationRequest("Создай бота для кафе и добавь абсолютно все функции в меню"), true);
   assert.equal(isWorkflowCreationRequest("Добавь вопрос о модели оборудования"), false);
   assert.equal(isWorkflowCreationRequest("Новый сценарий для сбора заявок"), true);
+  assert.equal(isWorkflowCreationRequest("Привет"), false);
+  assert.equal(isWorkflowCreationRequest("фывыфывы"), false);
+  assert.equal(isWorkflowCreationRequest("Нужен бот для моей фотостудии"), true);
+  assert.equal(isBuilderCreationIntent("У меня фотостудия, хочу собирать заявки на съёмки"), true);
+  assert.equal(isBuilderCreationIntent("Добавь вопрос о модели оборудования"), false);
 
   const baseline = createBuilderBaseline("Добро пожаловать в мастерскую.");
   assert.equal(baseline.nodes.length, 4);
@@ -17,6 +22,56 @@ test("creation requests start from a clean personal flow while explicit edits ke
   assert.match(baseline.nodes.find((node) => node.id === "menu").data.text, /чем мы можем помочь/iu);
   assert.ok(baseline.nodes.find((node) => node.id === "menu").data.buttonLabel);
   assert.ok(!baseline.nodes.some((node) => ["catalog", "booking"].includes(node.data.kind)), "the clean starting flow must not contain demo-shop behavior");
+});
+
+test("builder filters greet politely and reject unrelated input without treating it as a build request", () => {
+  assert.equal(classifyBuilderMessage("Привет!"), "greeting");
+  assert.equal(classifyBuilderMessage("Привет, как дела?"), "greeting");
+  assert.equal(classifyBuilderMessage("Сәлеметсіз бе"), "greeting");
+  assert.equal(classifyBuilderMessage("Hello"), "greeting");
+  assert.equal(classifyBuilderMessage("фывыфывы"), "off_topic");
+  assert.equal(classifyBuilderMessage("Как сегодня погода?"), "off_topic");
+  assert.equal(classifyBuilderMessage("Создай новый сайт"), "off_topic");
+  assert.equal(classifyBuilderMessage("фигня", { hasPendingClarification: true }), "off_topic");
+  assert.equal(classifyBuilderMessage("WhatsApp, завтра в 17:00", { hasPendingClarification: true }), "builder");
+  assert.equal(classifyBuilderMessage("Маникюр и педикюр", { hasPendingClarification: true }), "builder");
+  assert.equal(classifyBuilderMessage("А какой фильм посмотреть?", { hasPendingClarification: true }), "off_topic");
+  assert.equal(classifyBuilderMessage("Создай бота для фотостудии"), "builder");
+  assert.equal(classifyBuilderMessage("Добавь в сценарий шаг с телефоном"), "builder");
+  assert.match(getBuilderGateReply("off_topic", "ru"), /только с созданием и настройкой Telegram-ботов/iu);
+});
+
+test("creation clarification depends on whether the owner already gave useful workflow details", () => {
+  assert.equal(shouldAskBuilderClarification("Создай бота для фотостудии"), true);
+  assert.equal(shouldAskBuilderClarification("Создай бота для мастерской: собери модель и описание поломки, потом попроси телефон и отправь заявку владельцу"), false);
+  assert.equal(shouldAskBuilderClarification("Создай бота со всеми функциями"), false);
+});
+
+test("clarifying questions prefer the current business request over stale template and description", () => {
+  const questions = getWorkflowClarificationQuestions("Создай бота для курсов английского", {
+    description: "Кофейня с доставкой",
+    template: "Магазин",
+  });
+  assert.match(questions[0], /обуч|ученик|курс|консультац/iu);
+  assert.doesNotMatch(questions[0], /блюд|достав|каталог|товар/iu);
+});
+
+test("AI clarification output is sanitized and falls back to relevant questions", () => {
+  const questions = normalizeBuilderClarificationQuestions(
+    ["Что ученик хочет изучать и к какому результату стремится?", "Укажите телефон для связи с администратором.", "Внутренний JSON API"],
+    "Создай бота для онлайн-курсов",
+    { locale: "ru" },
+  );
+  assert.equal(questions.length, 2);
+  assert.match(questions[0], /ученик|изучать/iu);
+  assert.match(questions[1], /телефон/iu);
+  assert.doesNotMatch(questions.join(" "), /JSON|API/iu);
+});
+
+test("Telegram bot tokens are redacted before saving or sending builder context", () => {
+  const safe = sanitizeBuilderText("Бот создан 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghi");
+  assert.match(safe, /токен Telegram скрыт/iu);
+  assert.doesNotMatch(safe, /123456789:/u);
 });
 
 test("all-functions requests include every block kind, reachable through menus with no invented business facts", () => {
