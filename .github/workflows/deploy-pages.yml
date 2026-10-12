@@ -28,8 +28,8 @@ jobs:
       - name: Build static site
         env:
           VITE_BASE_PATH: /Bot-s/
-          # Temporary Quick Tunnel for the user's always-on Docker host. A repo variable overrides it.
-          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://experiences-crossword-richmond-aquarium.trycloudflare.com' }}
+          # Temporary Quick Tunnel for the Docker host. A repository variable overrides this address.
+          VITE_API_BASE_URL: ${{ vars.VITE_API_BASE_URL || 'https://medications-compared-powder-sitting.trycloudflare.com' }}
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: |

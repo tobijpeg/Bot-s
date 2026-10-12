@@ -202,7 +202,7 @@ export default function BotFlowEditor() {
 
   return <div className="max-w-[1500px]">
     <div className="mb-4 flex flex-wrap items-center justify-between gap-3">
-      <div><p className="text-xs font-semibold uppercase tracking-wide text-accent-600">{editing ? `Редактор · @${botUsername || "bot"}` : "Визуальный конструктор"}</p><h1 className="mt-1 font-display text-2xl font-bold text-navy-950">{editing ? "Редактирование бота" : "Собери сценарий из блоков"}</h1><p className="mt-1 text-sm text-gray-500">Соедини блоки линиями. ИИ помогает только на этапе создания — бот отвечает клиентам по этим правилам.</p></div>
+      <div><p className="text-xs font-semibold uppercase tracking-wide text-accent-600">{editing ? `Редактор · @${botUsername || "bot"}` : "Визуальный конструктор"}</p><h1 className="mt-1 font-display text-2xl font-bold text-navy-950">{editing ? "Редактирование бота" : "Собери сценарий из блоков"}</h1><p className="mt-1 text-sm text-gray-500">Опиши задачу или изменение — ИИ добавит блоки и связи прямо на схему. Клиентские ответы бот выполняет по сохранённым правилам.</p></div>
       <div className="flex gap-2"><button onClick={() => navigate(editing ? "/bots" : "/create/structure")} className="rounded-xl border border-gray-200 bg-white px-4 py-2.5 text-sm font-semibold text-slate-700">Назад</button><button onClick={save} disabled={saving} className="rounded-xl bg-navy-950 px-5 py-2.5 text-sm font-semibold text-white disabled:opacity-50">{saving ? "Сохраняю…" : editing ? "Сохранить изменения" : "Сохранить сценарий →"}</button></div>
     </div>
     <section className="mb-3 space-y-3 rounded-xl border border-gray-100 bg-white p-3">
