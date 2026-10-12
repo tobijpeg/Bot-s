@@ -30,7 +30,7 @@ npm run dev
 docker compose up -d --build
 ```
 
-По умолчанию запускается API без ИИ — этого достаточно для хранения данных и работы Telegram-ботов. Чтобы включить ИИ-конструктор, выполните `docker compose --profile ai up -d --build`; при первом запуске Compose скачает модель `OLLAMA_MODEL`. Данные API и модели сохраняются в Docker volumes. Не удаляйте volume `platform_data`: он содержит ключ, нужный для расшифровки уже сохранённых Telegram-токенов.
+По умолчанию запускается API без ИИ — этого достаточно для хранения данных и работы Telegram-ботов. Чтобы включить ИИ-конструктор, укажите `OLLAMA_URL=http://ollama:11434` в `.env` и выполните `docker compose --profile ai up -d --build`; при первом запуске Compose скачает модель `OLLAMA_MODEL`. Данные API и модели сохраняются в Docker volumes. Не удаляйте volume `platform_data`: он содержит ключ, нужный для расшифровки уже сохранённых Telegram-токенов.
 
 ## Supabase
 
