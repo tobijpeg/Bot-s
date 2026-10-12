@@ -27,7 +27,7 @@ const AI_BUILDER_COPY = {
     initialHint: "Опишите задачу бизнеса обычными словами. Для нового сценария сначала уточню пару деталей, затем построю шаги и тексты прямо на схеме.",
     placeholder: "Например: создай запись для студии массажа…", answerPlaceholder: "Ответьте на оба вопроса одним сообщением…",
     submit: "Применить к схеме", answerSubmit: "Отправить ответы и построить", skip: "Построить без уточнений", busy: "Изменяю схему…", working: "ИИ строит сценарий…",
-    applied: "Изменения уже применены к схеме — проверьте её и нажмите «Сохранить сценарий».", error: "Не получилось изменить сценарий:",
+    applied: "Изменения уже применены к схеме — проверьте её и нажмите «Сохранить сценарий».", error: "Не получилось изменить сценарий:", sessionExpired: "Сессия аккаунта истекла. Войдите в аккаунт снова и повторите запрос.",
   },
   kk: {
     title: "ИИ көмекші", subtitle: "Конструктор сызбасын құрады және өзгертеді",
@@ -35,7 +35,7 @@ const AI_BUILDER_COPY = {
     initialHint: "Бот бизнесіңізге қалай көмектесуі керегін қарапайым сөзбен жазыңыз. Жаңа сценарий жасамас бұрын екі сұрақ қойып, қадамдар мен мәтіндерді сызбаға қосамын.",
     placeholder: "Мысалы: массаж студиясына жазылу ботын жаса…", answerPlaceholder: "Екі сұраққа бір хабарламада жауап беріңіз…",
     submit: "Сызбаға қолдану", answerSubmit: "Жауап беріп, сценарий құру", skip: "Сұрақтарсыз құру", busy: "Сценарий өзгертілуде…", working: "ИИ сценарий құрып жатыр…",
-    applied: "Өзгерістер сызбаға қосылды. Тексеріп, «Сценарийді сақтау» батырмасын басыңыз.", error: "Сценарийді өзгерту мүмкін болмады:",
+    applied: "Өзгерістер сызбаға қосылды. Тексеріп, «Сценарийді сақтау» батырмасын басыңыз.", error: "Сценарийді өзгерту мүмкін болмады:", sessionExpired: "Аккаунт сессиясының мерзімі аяқталды. Қайта кіріп, сұрауды қайталаңыз.",
   },
   en: {
     title: "AI assistant", subtitle: "Builds and updates the workflow",
@@ -43,7 +43,7 @@ const AI_BUILDER_COPY = {
     initialHint: "Describe what your business needs in plain language. For a new workflow, I’ll ask two quick questions, then build its steps and copy on the canvas.",
     placeholder: "For example: create bookings for my massage studio…", answerPlaceholder: "Answer both questions in one message…",
     submit: "Apply to workflow", answerSubmit: "Send answers and build", skip: "Build without questions", busy: "Updating workflow…", working: "AI is building the workflow…",
-    applied: "The changes are on the canvas. Review them, then select “Save workflow”.", error: "Could not update the workflow:",
+    applied: "The changes are on the canvas. Review them, then select “Save workflow”.", error: "Could not update the workflow:", sessionExpired: "Your sign-in session expired. Sign in again and retry.",
   },
 };
 const cleanWorkflow = (nodes, edges) => ({
@@ -250,7 +250,7 @@ export default function BotFlowEditor() {
       if (!authData.session) throw new Error("Сессия Supabase истекла. Войдите заново.");
       const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session.access_token}` }, body: JSON.stringify({ question, workflow: { nodes, edges }, context: { description, businessName, template: templates[category]?.label, language: contacts?.language || "", interfaceLanguage: siteLanguage, ownerTelegramId } }) });
       const result = await response.json();
-      if (!response.ok) throw new Error(result.error || "ИИ не смог изменить сценарий.");
+      if (!response.ok) throw new Error(response.status === 401 ? aiCopy.sessionExpired : result.error || "ИИ не смог изменить сценарий.");
       setNodes(result.workflow.nodes); setEdges(result.workflow.edges); setSelectedId(null);
       setAiMessages((current) => [...current, { role: "assistant", text: `${result.answer} ${aiCopy.applied} ${siteLanguage === "en" ? "Monthly limit" : siteLanguage === "kk" ? "Айлық лимит" : "Лимит за месяц"}: ${result.used}/${result.limit}.` }]);
     } catch (exception) {
