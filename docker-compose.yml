@@ -16,16 +16,13 @@ services:
       SUPABASE_SECRET_KEY: ${SUPABASE_SECRET_KEY:-}
       BOT_TOKEN_ENCRYPTION_KEY: ${BOT_TOKEN_ENCRYPTION_KEY:-}
       OLLAMA_MODEL: ${OLLAMA_MODEL:-qwen3:4b}
-      OLLAMA_URL: http://ollama:11434
+      OLLAMA_URL: ${OLLAMA_URL:-}
       PUBLIC_APP_ORIGIN: ${PUBLIC_APP_ORIGIN:-}
       ADMIN_EMAIL: ${ADMIN_EMAIL:-}
     ports:
       - "${APP_PORT:-4174}:4174"
     volumes:
       - platform_data:/app/.data
-    depends_on:
-      ollama-model:
-        condition: service_completed_successfully
     healthcheck:
       test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:4174/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"]
       interval: 10s
@@ -34,6 +31,7 @@ services:
       start_period: 10s
 
   ollama:
+    profiles: ["ai"]
     image: ollama/ollama:latest
     restart: unless-stopped
     entrypoint: ["ollama", "serve"]
@@ -41,6 +39,7 @@ services:
       - ollama_models:/root/.ollama
 
   ollama-model:
+    profiles: ["ai"]
     image: ollama/ollama:latest
     restart: "no"
     depends_on:

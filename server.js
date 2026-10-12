@@ -1,6 +1,6 @@
 import { createServer } from "node:http";
 import { randomBytes, createCipheriv, createDecipheriv } from "node:crypto";
-import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync } from "node:fs";
+import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSync } from "node:fs";
 import { dirname, join, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
@@ -92,14 +92,26 @@ function response(res, status, body) {
 function serveStatic(pathname, res) {
   const routes = { ".html": "text/html; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8", ".png": "image/png", ".svg": "image/svg+xml", ".ico": "image/x-icon", ".woff2": "font/woff2" };
   const distRoot = resolve(root, "dist");
+  const indexFile = resolve(distRoot, "index.html");
   let file;
   try { file = resolve(distRoot, decodeURIComponent(pathname).replace(/^\/+/, "")); }
-  catch { file = resolve(distRoot, "index.html"); }
+  catch { file = indexFile; }
   const pathFromDist = relative(distRoot, file);
-  if (pathFromDist === ".." || pathFromDist.startsWith(`..${sep}`) || !existsSync(file)) file = resolve(distRoot, "index.html");
+  if (pathFromDist === ".." || pathFromDist.startsWith(`..${sep}`) || !existsSync(file)) file = indexFile;
+  else if (statSync(file).isDirectory()) file = resolve(file, "index.html");
+  if (!existsSync(file) || !statSync(file).isFile()) {
+    response(res, 404, { error: "Not found" });
+    return;
+  }
   const extension = file.slice(file.lastIndexOf("."));
   res.writeHead(200, { "Content-Type": routes[extension] || "application/octet-stream", "X-Content-Type-Options": "nosniff" });
-  createReadStream(file).pipe(res);
+  const stream = createReadStream(file);
+  stream.on("error", (error) => {
+    console.error("Could not serve static file:", error.message);
+    if (res.headersSent) res.destroy(error);
+    else response(res, 500, { error: "Could not read static file." });
+  });
+  stream.pipe(res);
 }
 async function bodyOf(req) {
   const chunks = [];
@@ -207,9 +219,9 @@ async function saveInboxMessage(record, ctx, { direction = "inbound", kind = "te
 function telegramMessageSummary(ctx) {
   const message = ctx.message || {};
   if (message.text) return { kind: "text", text: message.text };
+  if (message.document) return { kind: "document", text: message.caption || "Документ", fileId: message.document.file_id, fileName: message.document.file_name || "document", mimeType: message.document.mime_type || null };
+  if (message.photo?.length) return { kind: "photo", text: message.caption || "Фото", fileId: message.photo.at(-1).file_id, fileName: "photo.jpg", mimeType: "image/jpeg" };
   if (message.caption) return { kind: "text", text: message.caption };
-  if (message.document) return { kind: "document", text: "Документ", fileId: message.document.file_id, fileName: message.document.file_name || "document", mimeType: message.document.mime_type || null };
-  if (message.photo?.length) return { kind: "photo", text: "Фото", fileId: message.photo.at(-1).file_id, fileName: "photo.jpg", mimeType: "image/jpeg" };
   if (message.location) return { kind: "location", text: `Геолокация: ${message.location.latitude}, ${message.location.longitude}` };
   if (message.contact) return { kind: "text", text: `Контакт: ${message.contact.phone_number || ""} ${message.contact.first_name || ""}`.trim() };
   return { kind: "text", text: "Входящее сообщение" };
