@@ -18,6 +18,18 @@ function WorkflowNode({ data, selected }) {
 }
 const nodeTypes = { workflow: WorkflowNode };
 const editDraftKey = (userId, botId) => `bots-kz-editor-draft-v1:${userId}:${botId}`;
+const cleanWorkflow = (nodes, edges) => ({
+  nodes: nodes.map((node) => {
+    const cleanNode = { ...node };
+    ["selected", "dragging", "resizing", "measured", "positionAbsolute", "width", "height"].forEach((key) => delete cleanNode[key]);
+    return cleanNode;
+  }),
+  edges: edges.map((edge) => {
+    const cleanEdge = { ...edge };
+    delete cleanEdge.selected;
+    return cleanEdge;
+  }),
+});
 
 export default function BotFlowEditor() {
   const navigate = useNavigate();
@@ -49,7 +61,7 @@ export default function BotFlowEditor() {
   const initialServerConfig = useRef(null);
   const suppressDraftSave = useRef(false);
   const selectedNode = nodes.find((node) => node.id === selectedId);
-  const currentConfig = useMemo(() => ({ businessName, template: templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: { nodes, edges } }), [businessName, templates, category, description, greeting, features, items, contacts, ownerTelegramId, nodes, edges]);
+  const currentConfig = useMemo(() => ({ businessName, template: templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: cleanWorkflow(nodes, edges) }), [businessName, templates, category, description, greeting, features, items, contacts, ownerTelegramId, nodes, edges]);
   const kinds = useMemo(() => Object.entries(nodeKinds), []);
   const visibleKinds = kinds.filter(([kind, value]) => kind !== "start" && (blockCategory === "Все блоки" || nodeCategories[blockCategory]?.includes(kind)) && `${value.title} ${kind}`.toLowerCase().includes(blockSearch.trim().toLowerCase()));
 
@@ -261,7 +273,7 @@ export default function BotFlowEditor() {
         </div>
         {toolTab === "blocks" && <div className="space-y-2 p-3">
           <div className="flex flex-wrap items-center gap-2"><input aria-label="Поиск блоков" value={blockSearch} onChange={(event) => setBlockSearch(event.target.value)} placeholder="Найти блок…" className="w-36 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs outline-none focus:border-violet-300 sm:w-48"/><div className="flex min-w-0 flex-1 gap-1 overflow-x-auto">{["Все блоки", ...Object.keys(nodeCategories)].map((name) => <button key={name} onClick={() => setBlockCategory(name)} className={`shrink-0 rounded-full px-2.5 py-1.5 text-[10px] font-medium ${blockCategory === name ? "bg-violet-700 text-white" : "bg-slate-100 text-slate-600 hover:bg-violet-50"}`}>{name}</button>)}</div></div>
-          <div className="grid max-h-[88px] grid-cols-2 gap-1.5 overflow-y-auto sm:grid-cols-4 xl:grid-cols-6">{visibleKinds.map(([kind, value]) => <button key={kind} onClick={() => addNode(kind)} className="flex min-w-0 items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2 text-left text-[11px] font-medium text-slate-700 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-900"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white text-sm shadow-sm">{value.icon}</span><span className="truncate">{value.title}</span><span className="ml-auto text-violet-500">＋</span></button>)}{visibleKinds.length === 0 && <p className="col-span-full px-2 py-3 text-xs text-gray-400">Нет блоков по запросу.</p>}</div>
+          <div className="grid grid-cols-2 gap-1.5 sm:grid-cols-4 lg:grid-cols-6 2xl:grid-cols-8">{visibleKinds.map(([kind, value]) => <button key={kind} onClick={() => addNode(kind)} className="flex min-w-0 items-center gap-2 rounded-xl border border-slate-100 bg-slate-50/80 px-2.5 py-2 text-left text-[11px] font-medium text-slate-700 transition hover:border-violet-200 hover:bg-violet-50 hover:text-violet-900"><span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-lg bg-white text-sm shadow-sm">{value.icon}</span><span className="truncate">{value.title}</span><span className="ml-auto text-violet-500">＋</span></button>)}{visibleKinds.length === 0 && <p className="col-span-full px-2 py-3 text-xs text-gray-400">Нет блоков по запросу.</p>}</div>
         </div>}
         {toolTab === "examples" && <div className="grid max-h-32 grid-cols-2 gap-2 overflow-y-auto p-3 sm:grid-cols-4">{Object.entries(workflowPresets).map(([key, preset]) => <button key={key} onClick={() => applyPreset(key)} className="rounded-xl border border-slate-100 bg-slate-50 p-3 text-left transition hover:border-violet-200 hover:bg-violet-50"><span className="block truncate text-xs font-semibold text-slate-800">{preset.label}</span><span className="mt-1 line-clamp-2 text-[10px] leading-4 text-gray-500">{preset.description}</span></button>)}</div>}
         {toolTab === "scripts" && <div className="space-y-2 p-3" data-tour-id="personal-scripts">
