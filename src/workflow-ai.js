@@ -119,6 +119,31 @@ export function applyWorkflowOperations(baseWorkflow, generated, { wantsDocument
   };
   for (const edge of (Array.isArray(generated?.edges) ? generated.edges : []).slice(0, 40)) addEdge(edge?.source, edge?.target, edge?.label);
 
+  // A common model mistake is to represent a single menu choice as a second
+  // one-button menu (sometimes attached to an unrelated existing branch).
+  // Collapse that node into a direct choice on the existing main menu.
+  const primaryMenu = baseNodes.map((node) => nodeById.get(node.id)).find((node) => node?.data?.kind === "menu")
+    || nodes.find((node) => node.data.kind === "menu");
+  if (primaryMenu) {
+    for (const nodeId of [...addedIds]) {
+      const actionMenu = nodeById.get(nodeId);
+      if (!actionMenu || actionMenu.data.kind !== "menu" || !/(?:запис|брон|заявк|заказ|оплат|купить|услуг)/iu.test(`${actionMenu.data.title} ${actionMenu.data.buttonLabel}`)) continue;
+      const outgoing = edges.filter((edge) => edge.source === nodeId);
+      if (outgoing.length !== 1) continue;
+      const targetId = outgoing[0].target;
+      if (!nodeById.has(targetId) || targetId === primaryMenu.id) continue;
+      const label = actionMenu.data.buttonLabel || actionMenu.data.title;
+      for (let index = edges.length - 1; index >= 0; index -= 1) {
+        if (edges[index].source === nodeId || edges[index].target === nodeId) edges.splice(index, 1);
+      }
+      const nodeIndex = nodes.findIndex((item) => item.id === nodeId);
+      if (nodeIndex >= 0) nodes.splice(nodeIndex, 1);
+      nodeById.delete(nodeId);
+      addedIds.delete(nodeId);
+      addEdge(primaryMenu.id, targetId, label);
+    }
+  }
+
   if (wantsDocuments) {
     let documentNode = nodes.find((node) => node.data.kind === "document");
     const menuNode = nodes.find((node) => node.data.kind === "menu");

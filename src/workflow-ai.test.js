@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDefaultWorkflow } from "./workflow.js";
+import { createDefaultWorkflow, workflowPresets } from "./workflow.js";
 import { applyWorkflowOperations, createBuilderBaseline, isWorkflowCreationRequest } from "./workflow-ai.js";
 
 const block = (id, kind, title, text, buttonLabel = title) => ({ id, kind, title, text, buttonLabel, keywords: "" });
@@ -93,6 +93,38 @@ test("document requests reliably create and connect the document intake block", 
   const documentNode = result.workflow.nodes.find((node) => node.data.kind === "document");
   assert.ok(documentNode);
   assert.ok(result.workflow.edges.some((edge) => edge.source === "menu" && edge.target === documentNode.id));
+});
+
+test("a one-choice booking menu is corrected into a direct main-menu branch", () => {
+  const result = applyWorkflowOperations(workflowPresets.feedback.build(), {
+    addNodes: [
+      block("appointment-menu", "menu", "Записаться на услугу", "Выберите действие.", "Записаться на услугу"),
+      block("service", "question", "Какая услуга нужна?", "Выберите услугу из списка:"),
+      block("datetime", "question", "Желаемая дата и время", "Укажите дату и время записи."),
+      block("client-details", "question", "Имя и номер телефона", "Введите имя и номер телефона."),
+      block("confirmation", "message", "Подтверждение записи", "Спасибо! Заявка отправлена."),
+      block("contacts", "contacts", "Контакты компании", "Контакты компании"),
+    ],
+    updateNodes: [], removeNodes: [], removeEdges: [],
+    edges: [
+      { source: "news", target: "appointment-menu", label: "Записаться на услугу" },
+      { source: "appointment-menu", target: "service", label: "Выбрать услугу" },
+      { source: "service", target: "datetime", label: "Указать дату и время" },
+      { source: "datetime", target: "client-details", label: "Отправить данные" },
+      { source: "client-details", target: "confirmation", label: "Подтвердить запись" },
+      { source: "confirmation", target: "contacts", label: "Показать контакты" },
+    ],
+  });
+  const nodeIds = new Set(result.workflow.nodes.map((node) => node.id));
+  const edgePairs = new Set(result.workflow.edges.map((edge) => `${edge.source}->${edge.target}`));
+
+  assert.ok(!nodeIds.has("appointment-menu"), "a single-action menu should not be an extra nested menu");
+  assert.ok(edgePairs.has("loyalty->service"), "booking should be a button on the existing main menu");
+  assert.ok(!edgePairs.has("news->appointment-menu"), "booking must not be nested under the unrelated news branch");
+  assert.ok(edgePairs.has("loyalty->review") && edgePairs.has("loyalty->news"), "existing review and news choices must remain");
+  assert.ok(edgePairs.has("service->datetime") && edgePairs.has("datetime->client-details"));
+  assert.ok(edgePairs.has("client-details->confirmation") && edgePairs.has("confirmation->contacts"));
+  assert.ok(result.workflow.edges.every((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)));
 });
 
 test("requested removals prune dangling connections but preserve start and fallback", () => {
