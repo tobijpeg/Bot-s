@@ -69,7 +69,7 @@ docker compose up -d --build
 
 ## Публикация
 
-GitHub Pages размещает только интерфейс. Для ботов нужен постоянно работающий сервер с Docker, HTTPS-адрес API и проект Supabase. На сервере храните Supabase secret key и постоянный `BOT_TOKEN_ENCRYPTION_KEY`; не добавляйте их в GitHub Variables или репозиторий. На GitHub в **Settings → Secrets and variables → Actions → Variables** задайте `VITE_API_BASE_URL` (HTTPS-адрес API без завершающего `/`), `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`, затем перезапустите workflow **Deploy GitHub Pages**. `PUBLIC_APP_ORIGIN` должен быть ровно `https://tobijpeg.github.io`: браузер отправляет origin без пути `/Bot-s/`.
+GitHub Pages размещает только интерфейс. Для ботов нужен постоянно работающий сервер с Docker, HTTPS-адрес API и проект Supabase. На сервере храните Supabase secret key и постоянный `BOT_TOKEN_ENCRYPTION_KEY`; не добавляйте их в GitHub Variables или репозиторий. Workflow использует `VITE_API_BASE_URL` из GitHub Variables, если он задан; для текущего сервера есть временный Quick Tunnel как запасной адрес. Для смены адреса создайте/обновите GitHub Variable `VITE_API_BASE_URL` (HTTPS-адрес API без завершающего `/`) и запустите workflow **Deploy GitHub Pages**. Также должны быть заданы `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`. `PUBLIC_APP_ORIGIN` должен быть ровно `https://tobijpeg.github.io`: браузер отправляет origin без пути `/Bot-s/`. Quick Tunnel действует только пока работает процесс cloudflared и компьютер подключён к интернету; для постоянного адреса нужен именованный Cloudflare Tunnel с вашим доменом или постоянно работающий VPS.
 
 ## Проверки
 
