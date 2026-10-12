@@ -5,7 +5,7 @@
 ## Архитектура
 
 - **Frontend:** React + Vite; публикуется на GitHub Pages.
-- **API и Telegram polling:** Node.js в Docker (`bots-platform`). Запуск и редакторские изменения отправляют конфигурацию на API; работающий бот перезапускается с новой схемой.
+- **API и Telegram polling:** сервер Node.js (можно запустить напрямую или в Docker). Запуск и редакторские изменения отправляют конфигурацию на API; работающий бот перезапускается с новой схемой.
 - **Аккаунты и данные:** Supabase Auth и таблицы приложения. Telegram-токены шифруются AES-256-GCM до записи в закрытую таблицу `bot_secrets`.
 - **ИИ конструктора:** Ollama на сервере. ИИ помогает владельцу строить сценарий и не отвечает клиентам бота. Квота задаётся на стороне базы.
 
@@ -13,7 +13,7 @@
 
 ## Разработка
 
-Нужен Node.js 20+ и Docker для серверного запуска.
+Нужен Node.js 20 или новее. Docker для сервера не обязателен.
 
 ```powershell
 npm ci
@@ -21,6 +21,33 @@ npm run dev
 ```
 
 Локальный UI открывается на `http://127.0.0.1:5173`, API — на `http://127.0.0.1:4174`. Локальные переменные окружения хранятся в `.env`; используйте `.env.example` как перечень настроек.
+
+## Запуск API без Docker на Windows
+
+Установите Node.js с [официального сайта](https://nodejs.org/) и Git, затем откройте PowerShell:
+
+```powershell
+git clone https://github.com/tobijpeg/Bot-s.git
+cd Bot-s
+npm ci
+npm run build
+Copy-Item .env.docker.example .env
+notepad .env
+```
+
+В `.env` заполните `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY`, `SUPABASE_SECRET_KEY` и `BOT_TOKEN_ENCRYPTION_KEY`. Для последнего создайте ключ командой `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` и сохраните значение в `.env`. Замените `APP_PORT=4174` на `BOTSUITE_PORT=4174`. Оставьте `PUBLIC_APP_ORIGIN=https://tobijpeg.github.io`; `OLLAMA_URL` не задавайте, если ИИ не нужен. Не отправляйте содержимое `.env` в чат и не добавляйте его в GitHub.
+
+Запустите API и оставьте это окно PowerShell открытым:
+
+```powershell
+npm start
+```
+
+В другом окне PowerShell поднимите временный HTTPS-туннель к API командой `cloudflared tunnel --url http://localhost:4174`. Установщик `cloudflared` для Windows доступен в [официальной инструкции Cloudflare](https://developers.cloudflare.com/cloudflare-one/connections/connect-networks/downloads/). Скопируйте выданный адрес `https://….trycloudflare.com`.
+
+В настройках GitHub **Settings → Secrets and variables → Actions → Variables** задайте `VITE_API_BASE_URL` равным этому HTTPS-адресу (без `/` в конце). Проверьте, что заданы `VITE_SUPABASE_URL` и `VITE_SUPABASE_PUBLISHABLE_KEY`, затем запустите workflow **Deploy GitHub Pages**. Если Quick Tunnel перезапущен, его адрес изменится: обновите `VITE_API_BASE_URL` и повторно запустите workflow.
+
+Quick Tunnel бесплатный, временный и предназначен для демонстраций и разработки: адрес действует только пока запущено окно туннеля, а компьютер должен оставаться включённым и быть в интернете. Поэтому перед защитой проверьте запуск API, туннеля, вход в приложение и реальные сценарии с тестовым Telegram-ботом. Согласуйте постоянную работу и установку программ с владельцем чужого компьютера.
 
 ## Запуск сервисов в Docker
 
