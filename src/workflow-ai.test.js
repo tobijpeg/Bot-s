@@ -1,12 +1,13 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { createDefaultWorkflow, workflowPresets } from "./workflow.js";
-import { applyWorkflowOperations, createBuilderBaseline, getWorkflowClarificationQuestions, isWorkflowCreationRequest, normalizeGeneratedNode } from "./workflow-ai.js";
+import { createDefaultWorkflow, nodeKinds, workflowPresets } from "./workflow.js";
+import { applyWorkflowOperations, cleanTemplateDataForGeneratedWorkflow, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getWorkflowClarificationQuestions, isAllFeatureRequest, isWorkflowCreationRequest, normalizeGeneratedNode } from "./workflow-ai.js";
 
 const block = (id, kind, title, text, buttonLabel = title) => ({ id, kind, title, text, buttonLabel, keywords: "" });
 
 test("creation requests start from a clean personal flow while explicit edits keep the current flow", () => {
   assert.equal(isWorkflowCreationRequest("Сделай мне сценарий для записи клиентов в мастерскую"), true);
+  assert.equal(isWorkflowCreationRequest("Создай бота для кафе и добавь абсолютно все функции в меню"), true);
   assert.equal(isWorkflowCreationRequest("Добавь вопрос о модели оборудования"), false);
   assert.equal(isWorkflowCreationRequest("Новый сценарий для сбора заявок"), true);
 
@@ -16,6 +17,58 @@ test("creation requests start from a clean personal flow while explicit edits ke
   assert.match(baseline.nodes.find((node) => node.id === "menu").data.text, /чем мы можем помочь/iu);
   assert.ok(baseline.nodes.find((node) => node.id === "menu").data.buttonLabel);
   assert.ok(!baseline.nodes.some((node) => ["catalog", "booking"].includes(node.data.kind)), "the clean starting flow must not contain demo-shop behavior");
+});
+
+test("all-functions requests include every block kind, reachable through menus with no invented business facts", () => {
+  const request = "Создай с нуля демонстрационного бота для сервисного центра в Алматы. Добавь в схему все перечисленные ниже функции.\nУточнения владельца: это тестовое кафе; нужно меню, заказ и бронь столика.";
+  assert.equal(isAllFeatureRequest(request), true);
+  assert.equal(detectWorkflowBusinessType(request, { template: "Магазин" }), "cafe", "the latest clarification must override an older business type and template");
+
+  const workflow = createAllFeatureWorkflow(request, { businessName: "Сервисный центр", description: "Магазин одежды", template: "Магазин" });
+  const kinds = new Set(workflow.nodes.map((node) => node.data.kind));
+  const nodeIds = new Set(workflow.nodes.map((node) => node.id));
+  assert.deepEqual([...kinds].sort(), Object.keys(nodeKinds).sort());
+  assert.ok(workflow.edges.every((edge) => nodeIds.has(edge.source) && nodeIds.has(edge.target)));
+
+  const menus = workflow.nodes.filter((node) => node.data.kind === "menu");
+  for (const menu of menus) assert.ok(workflow.edges.filter((edge) => edge.source === menu.id).length <= 8, `${menu.id} must fit Telegram's eight-button limit`);
+  const selectableKinds = new Set(workflow.edges.filter((edge) => menus.some((menu) => menu.id === edge.source)).map((edge) => workflow.nodes.find((node) => node.id === edge.target)?.data.kind));
+  for (const kind of Object.keys(nodeKinds).filter((kind) => !["start", "fallback"].includes(kind))) assert.ok(selectableKinds.has(kind), `${kind} must be directly available from a menu`);
+  const reachable = new Set();
+  const visit = (id) => { if (reachable.has(id)) return; reachable.add(id); workflow.edges.filter((edge) => edge.source === id).forEach((edge) => visit(edge.target)); };
+  visit("start");
+  for (const node of workflow.nodes.filter((item) => item.data.kind !== "fallback")) assert.ok(reachable.has(node.id), `${node.id} must be reachable from /start`);
+  assert.ok(workflow.nodes.some((node) => node.data.kind === "fallback"), "the default response is triggered automatically for unmatched messages");
+
+  const copy = workflow.nodes.map((node) => `${node.data.title} ${node.data.text}`).join(" ");
+  assert.match(copy, /Меню кафе/iu);
+  assert.doesNotMatch(copy, /сервисный центр|одежд|Алматы|\+7|\b\S+@\S+\b|9:00|21:00/iu);
+  assert.match(workflow.nodes.find((node) => node.data.kind === "payment").data.text, /недоступна/iu);
+});
+
+test("cafe all-features workflow includes separate takeaway, delivery, and table-booking paths", () => {
+  const workflow = createAllFeatureWorkflow("Создай с нуля бота для кафе и добавь все функции", {});
+  const byId = new Map(workflow.nodes.map((node) => [node.id, node]));
+  const menuEdges = workflow.edges.filter((edge) => edge.source === "menu-requests");
+  const menuLabels = menuEdges.map((edge) => edge.label);
+  assert.ok(menuLabels.some((label) => /навынос/iu.test(label)));
+  assert.ok(menuLabels.some((label) => /достав/iu.test(label)));
+  assert.ok(menuLabels.some((label) => /столик/iu.test(label)));
+  assert.match(byId.get("all-takeaway-order").data.text, /количеств.*время.*телефон/iu);
+  assert.match(byId.get("all-delivery-order").data.text, /адрес.*время.*телефон/iu);
+  assert.match(byId.get("all-booking").data.text, /число гостей/iu);
+});
+
+test("new AI workflows clear only template examples while retaining owner-entered business details", () => {
+  const template = { description: "Шаблон магазина", features: ["Каталог"], items: [{ name: "Футболка", price: 1000 }] };
+  const cleaned = cleanTemplateDataForGeneratedWorkflow({ description: template.description, features: template.features, items: template.items, contacts: { hours: "Ежедневно, 10:00–20:00", phone: "+7 777 123 45 67", address: "Алматы" }, template });
+  assert.equal(cleaned.category, "custom");
+  assert.equal(cleaned.description, "");
+  assert.deepEqual(cleaned.features, []);
+  assert.deepEqual(cleaned.items, []);
+  assert.equal(cleaned.contacts.hours, "");
+  assert.equal(cleaned.contacts.phone, "+7 777 123 45 67");
+  assert.equal(cleaned.contacts.address, "Алматы");
 });
 
 test("clarifying questions are personalized to a barbershop and cover the actual booking flow", () => {

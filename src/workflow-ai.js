@@ -8,7 +8,15 @@ function randomHex(byteLength) {
 }
 
 const EDIT_REQUEST = /(?:добав|измени|помен|удал|убер|соедини|свяж|переимен|обнов|допол|перенес|отредактир)/iu;
-const NEW_WORKFLOW_REQUEST = /(?:с\s+нуля|нов(?:ый|ую|ое|ого)\s+(?:сценар|структур|бот))/iu;
+const NEW_WORKFLOW_REQUEST = /(?:с\s+нуля|нов(?:ый|ую|ое|ого)\s+(?:сценар|структур|бот)|(?:созда|сдела|собер|постро).{0,80}(?:бот|сценар|структур))/iu;
+const BUSINESS_TYPE_HINTS = [
+  { kind: "cafe", match: /(?:кафе|кофейн|кофех|ресторан|бистро|пицц|пекарн|кондитер)/iu },
+  { kind: "repair", match: /(?:сервисн.{0,12}центр|ремонт|автосервис|мастерск|оборудован|сантехник|электрик)/iu },
+  { kind: "shop", match: /(?:магазин|интернет-магаз|одежд|обув|маркетплейс|розничн.{0,12}торгов)/iu },
+  { kind: "beauty", match: /(?:салон красоты|маникюр|педикюр|парикмах|барбер|косметолог)/iu },
+  { kind: "education", match: /(?:обучен|курс|школ|репетитор|урок|вебинар|образован)/iu },
+  { kind: "medical", match: /(?:клиник|стоматолог|врач|медицин|аптек)/iu },
+];
 
 function normalizeQuestionText(text) {
   const value = String(text || "").slice(0, 1000);
@@ -21,6 +29,39 @@ export function isWorkflowCreationRequest(question) {
   const text = String(question || "").trim();
   if (NEW_WORKFLOW_REQUEST.test(text)) return true;
   return !EDIT_REQUEST.test(text);
+}
+
+export function isAllFeatureRequest(question) {
+  return /(?:\ball\s+(?:features|functions|blocks)\b|\bevery\s+(?:feature|function|block)\b|абсолютно\s+все\s+(?:функц|блок|возможност)|все\s+(?:перечислен[\p{L}]*\s+(?:ниже\s+)?)?(?:функц|тип\w*\s+блок|блоки|блоков|возможност)|всю\s+библиотек\w*|кажд\w*\s+тип\w*\s+блок)/iu.test(String(question || ""));
+}
+
+function lastMatchIndex(text, pattern) {
+  const matcher = new RegExp(pattern.source, `${pattern.flags.replace(/[gy]/g, "")}g`);
+  let lastIndex = -1;
+  for (const match of text.matchAll(matcher)) lastIndex = match.index;
+  return lastIndex;
+}
+
+export function detectWorkflowBusinessType(question, context = {}) {
+  const requestedText = String(question || "");
+  const requestedMatches = BUSINESS_TYPE_HINTS.map(({ kind, match }) => ({ kind, index: lastMatchIndex(requestedText, match) })).filter(({ index }) => index >= 0);
+  if (requestedMatches.length) return requestedMatches.reduce((latest, entry) => entry.index > latest.index ? entry : latest).kind;
+  const existingContext = [context.businessName, context.description, context.template].filter(Boolean).join(" ");
+  const contextMatches = BUSINESS_TYPE_HINTS.map(({ kind, match }) => ({ kind, index: lastMatchIndex(existingContext, match) })).filter(({ index }) => index >= 0);
+  return contextMatches.length ? contextMatches.reduce((latest, entry) => entry.index > latest.index ? entry : latest).kind : "general";
+}
+
+export function cleanTemplateDataForGeneratedWorkflow({ description = "", features = [], items = [], contacts = {}, template = null } = {}) {
+  const sameValue = (left, right) => JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  const cleanedContacts = { ...contacts };
+  if (cleanedContacts.hours === "Ежедневно, 10:00–20:00") cleanedContacts.hours = "";
+  return {
+    category: "custom",
+    description: sameValue(description, template?.description) ? "" : description,
+    features: sameValue(features, template?.features) ? [] : features,
+    items: sameValue(items, template?.items) ? [] : items,
+    contacts: cleanedContacts,
+  };
 }
 
 const BUSINESS_TYPES = [
@@ -138,6 +179,106 @@ export function createBuilderBaseline(greeting = "Здравствуйте! Ра
     { id: "builder-welcome-menu", source: "welcome", target: "menu", label: "" },
   ];
   return { nodes, edges };
+}
+
+export function createAllFeatureWorkflow(question, context = {}) {
+  const businessType = detectWorkflowBusinessType(question, context);
+  const isCafe = businessType === "cafe";
+  const workflow = createBuilderBaseline(isCafe
+    ? "Добро пожаловать! Здесь можно посмотреть меню, оформить заказ, забронировать столик или связаться с нами."
+    : "Добро пожаловать! Выберите раздел, чтобы посмотреть доступные функции и связаться с компанией.");
+  const mainMenu = workflow.nodes.find((node) => node.id === "menu");
+  mainMenu.data.text = "Выберите раздел — внутри собраны функции бота.";
+
+  const groups = [
+    { id: "menu-catalog", title: isCafe ? "Меню и ссылки" : "Каталог и ссылки", label: isCafe ? "🍽️ Меню и ссылки" : "🛍️ Каталог и ссылки", kinds: ["message", "catalog", "payment", "link"] },
+    { id: "menu-requests", title: isCafe ? "Заказ и бронь" : "Заявки и документы", label: isCafe ? "📝 Заказ и бронь" : "📨 Заявки и документы", kinds: ["booking", "question", "document"] },
+    { id: "menu-support", title: "Контакты и помощь", label: "📍 Контакты и помощь", kinds: ["contacts", "location", "handoff"] },
+    { id: "menu-updates", title: "Отзывы и новости", label: "⭐ Отзывы и новости", kinds: ["feedback", "subscribe"] },
+    { id: "menu-tools", title: "Дополнительные функции", label: "⚙️ Дополнительные функции", kinds: ["keyword", "condition", "delay", "notification"] },
+  ];
+  const copy = {
+    message: { title: "Информация о компании", text: "Здесь появится информация о компании. Если хотите что-то уточнить, напишите нам в чат.", buttonLabel: "ℹ️ О компании" },
+    catalog: { title: isCafe ? "Меню кафе" : "Каталог товаров и услуг", text: isCafe ? "Меню пока не заполнено. Напишите нам, чтобы уточнить ассортимент." : "Каталог пока пуст. Напишите нам, чтобы уточнить ассортимент.", buttonLabel: isCafe ? "Открыть меню" : "Открыть каталог" },
+    payment: { title: "Ссылка на оплату", text: "Онлайн-оплата пока недоступна. Напишите нам, чтобы уточнить способ оплаты.", buttonLabel: "Перейти к оплате" },
+    link: { title: "Полезная ссылка", text: "Ссылка пока недоступна. Выберите другой раздел или напишите нам в чат.", buttonLabel: "Открыть ссылку" },
+    booking: { title: isCafe ? "Бронирование столика" : "Запись или заявка", text: isCafe ? "Укажите дату и время, число гостей, имя и телефон. Мы свяжемся с вами для подтверждения брони." : "Опишите нужную услугу и удобное время, оставьте имя и телефон для связи.", buttonLabel: isCafe ? "Забронировать столик" : "Оставить заявку" },
+    question: { title: isCafe ? "Вопрос заведению" : "Задать вопрос", text: isCafe ? "Напишите ваш вопрос заведению одним сообщением." : "Опишите вопрос одним сообщением — владелец сможет ответить вам в чате.", buttonLabel: "Задать вопрос" },
+    document: { title: "Приём документов", text: "Пришлите документ или фото, которое хотите передать компании.", buttonLabel: "📎 Отправить документ" },
+    contacts: { title: "Контакты компании", text: "Контактная информация пока не указана. Напишите нам сообщение в этом чате.", buttonLabel: "Показать контакты" },
+    location: { title: "Отправить геолокацию", text: "Поделитесь геолокацией, если хотите указать место встречи или доставки.", buttonLabel: "📍 Отправить геолокацию" },
+    handoff: { title: "Связь с оператором", text: "Напишите сообщение — сотрудник ответит вам в этом чате.", buttonLabel: "Написать оператору" },
+    feedback: { title: "Оставить отзыв", text: "Оцените ваш опыт и напишите, что можно улучшить.", buttonLabel: "⭐ Оставить отзыв" },
+    subscribe: { title: "Подписка на новости", text: "Если хотите получать новости, напишите «Подписаться». Рассылку владелец сможет организовать отдельно.", buttonLabel: "📣 Подписаться на новости" },
+    keyword: { title: "Поиск по ключевым словам", text: "Напишите «контакты», «адрес» или «график», чтобы открыть контактную информацию.", buttonLabel: "Проверить ключевые слова", keywords: "контакты,адрес,график" },
+    condition: { title: "Выбор варианта", text: isCafe ? "Выберите, что вам нужно." : "Выберите подходящий следующий шаг.", buttonLabel: "Выбрать вариант" },
+    delay: { title: "Пауза и ожидание", text: "Пауза завершена. Можно выбрать другую функцию.", buttonLabel: "Проверить паузу", delaySeconds: 1 },
+    notification: { title: "Уведомить владельца", text: "Связь с сотрудником пока недоступна. Попробуйте другой раздел меню.", buttonLabel: "Связаться с сотрудником" },
+  };
+  const groupMenus = new Map();
+  for (const [index, group] of groups.entries()) {
+    const node = { id: group.id, type: "workflow", position: { x: 850, y: 40 + index * 145 }, data: { kind: "menu", title: group.title, text: `Выберите действие в разделе «${group.title}».`, buttonLabel: group.label, keywords: "" } };
+    workflow.nodes.push(node);
+    groupMenus.set(group.id, node);
+    workflow.edges.push({ id: `all-features-main-${group.id}`, source: mainMenu.id, target: node.id, label: group.label });
+  }
+
+  let nextY = 40;
+  const nodeByKind = new Map();
+  for (const group of groups) {
+    const groupMenu = groupMenus.get(group.id);
+    for (const kind of group.kinds) {
+      const details = copy[kind];
+      const node = { id: `all-${kind}`, type: "workflow", position: { x: 1190, y: nextY }, data: { kind, title: details.title, text: details.text, buttonLabel: details.buttonLabel, keywords: details.keywords || "", ...(details.delaySeconds ? { delaySeconds: details.delaySeconds } : {}) } };
+      nextY += 135;
+      workflow.nodes.push(node);
+      nodeByKind.set(kind, node);
+      workflow.edges.push({ id: `all-features-${group.id}-${kind}`, source: groupMenu.id, target: node.id, label: details.buttonLabel });
+      if (["message", "catalog", "payment", "link", "booking", "question", "document", "contacts", "location", "handoff", "feedback", "subscribe", "notification"].includes(kind)) {
+        workflow.edges.push({ id: `all-features-return-${kind}`, source: node.id, target: groupMenu.id, label: "Вернуться в раздел" });
+      }
+    }
+  }
+
+  if (isCafe) {
+    const requestMenu = groupMenus.get("menu-requests");
+    const cafeActions = [
+      { id: "all-takeaway-order", kind: "booking", title: "Заказ навынос", text: "Напишите, какие блюда и в каком количестве подготовить, укажите желаемое время самовывоза, имя и телефон. Мы свяжемся с вами для подтверждения заказа.", buttonLabel: "🥡 Заказать навынос" },
+      { id: "all-delivery-order", kind: "question", title: "Заказ с доставкой", text: "Напишите блюда и количество, адрес и желаемое время доставки, а также телефон для связи. Мы свяжемся с вами для подтверждения заказа.", buttonLabel: "🛵 Заказать доставку" },
+    ];
+    const tableBooking = nodeByKind.get("booking");
+    tableBooking.data.title = "Бронирование столика";
+    tableBooking.data.text = "Укажите дату и время, число гостей, имя и телефон. Мы свяжемся с вами, чтобы подтвердить бронь.";
+    tableBooking.data.buttonLabel = "🍽️ Забронировать столик";
+    for (const [index, action] of cafeActions.entries()) {
+      workflow.nodes.push({ id: action.id, type: "workflow", position: { x: 1190, y: nextY + index * 135 }, data: { kind: action.kind, title: action.title, text: action.text, buttonLabel: action.buttonLabel, keywords: "" } });
+      workflow.edges.push(
+        { id: `all-features-menu-requests-${action.id}`, source: requestMenu.id, target: action.id, label: action.buttonLabel },
+        { id: `all-features-return-${action.id}`, source: action.id, target: requestMenu.id, label: "Вернуться к заказам" },
+      );
+    }
+  }
+
+  const toolsMenu = groupMenus.get("menu-tools");
+  const condition = nodeByKind.get("condition");
+  const questionNode = nodeByKind.get("question");
+  const bookingNode = nodeByKind.get("booking");
+  workflow.edges.push(
+    { id: "all-condition-question", source: condition.id, target: questionNode.id, label: "Задать вопрос" },
+    { id: "all-condition-booking", source: condition.id, target: bookingNode.id, label: isCafe ? "Забронировать столик" : "Оставить заявку" },
+  );
+  const keyword = nodeByKind.get("keyword");
+  const contacts = nodeByKind.get("contacts");
+  workflow.edges.push({ id: "all-keyword-contacts", source: keyword.id, target: contacts.id, label: "Показать контакты" });
+  const delay = nodeByKind.get("delay");
+  const delayMessage = { id: "all-delay-message", type: "workflow", position: { x: 1530, y: nextY }, data: { kind: "message", title: "Пауза завершена", text: "Готово — выберите другую функцию в разделе.", buttonLabel: "Продолжить", keywords: "" } };
+  workflow.nodes.push(delayMessage);
+  workflow.edges.push(
+    { id: "all-delay-next", source: delay.id, target: delayMessage.id, label: "Продолжить" },
+    { id: "all-delay-return", source: delayMessage.id, target: toolsMenu.id, label: "К дополнительным функциям" },
+  );
+
+  return workflow;
 }
 
 export function normalizeGeneratedNode(node, index, existingIds = new Set()) {

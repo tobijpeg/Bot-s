@@ -5,7 +5,7 @@ import "@xyflow/react/dist/style.css";
 import { useCreateBot } from "../context/CreateBotContext.jsx";
 import { useSitePreferences } from "../context/SitePreferencesContext.jsx";
 import { createDefaultWorkflow, nodeCategories, nodeKinds, workflowPresets } from "../workflow.js";
-import { getWorkflowClarificationQuestions, isWorkflowCreationRequest } from "../workflow-ai.js";
+import { cleanTemplateDataForGeneratedWorkflow, getWorkflowClarificationQuestions, isAllFeatureRequest, isWorkflowCreationRequest } from "../workflow-ai.js";
 import { supabase, supabaseSetupError } from "../lib/supabase.js";
 import { apiFetch } from "../lib/api.js";
 
@@ -92,7 +92,7 @@ export default function BotFlowEditor() {
   const initialServerConfig = useRef(null);
   const suppressDraftSave = useRef(false);
   const selectedNode = nodes.find((node) => node.id === selectedId);
-  const currentConfig = useMemo(() => ({ businessName, template: templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: cleanWorkflow(nodes, edges) }), [businessName, templates, category, description, greeting, features, items, contacts, ownerTelegramId, nodes, edges]);
+  const currentConfig = useMemo(() => ({ businessName, template: category === "custom" ? "Своя структура" : templates[category]?.label, description, greeting, features, items, contacts, ownerTelegramId, workflow: cleanWorkflow(nodes, edges) }), [businessName, templates, category, description, greeting, features, items, contacts, ownerTelegramId, nodes, edges]);
   const kinds = useMemo(() => Object.entries(nodeKinds), []);
   const visibleKinds = kinds.filter(([kind, value]) => kind !== "start" && (blockCategory === "Все блоки" || nodeCategories[blockCategory]?.includes(kind)) && `${value.title} ${kind}`.toLowerCase().includes(blockSearch.trim().toLowerCase()));
 
@@ -248,10 +248,23 @@ export default function BotFlowEditor() {
       if (!supabase) throw new Error(supabaseSetupError());
       const { data: authData } = await supabase.auth.getSession();
       if (!authData.session) throw new Error("Сессия Supabase истекла. Войдите заново.");
-      const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session.access_token}` }, body: JSON.stringify({ question, workflow: { nodes, edges }, context: { description, businessName, template: templates[category]?.label, language: contacts?.language || "", interfaceLanguage: siteLanguage, ownerTelegramId } }) });
+      const creating = isWorkflowCreationRequest(question) || isAllFeatureRequest(question);
+      const template = templates[category];
+      const promptDescription = creating && description === template?.description ? "" : description;
+      const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: `Bearer ${authData.session.access_token}` }, body: JSON.stringify({ question, workflow: { nodes, edges }, context: { description: promptDescription, businessName, template: creating ? "Своя структура" : template?.label, language: contacts?.language || "", interfaceLanguage: siteLanguage, ownerTelegramId } }) });
       const result = await response.json();
       if (!response.ok) throw new Error(response.status === 401 ? aiCopy.sessionExpired : result.error || "ИИ не смог изменить сценарий.");
       setNodes(result.workflow.nodes); setEdges(result.workflow.edges); setSelectedId(null);
+      if (result.createdFromScratch) {
+        const cleaned = cleanTemplateDataForGeneratedWorkflow({ description, features, items, contacts, template });
+        setField("category", cleaned.category);
+        setField("description", cleaned.description);
+        setField("features", cleaned.features);
+        setField("items", cleaned.items);
+        setField("contacts", cleaned.contacts);
+        const welcome = result.workflow.nodes.find((node) => node.id === "welcome")?.data?.text;
+        if (welcome) setField("greeting", welcome);
+      }
       setAiMessages((current) => [...current, { role: "assistant", text: `${result.answer} ${aiCopy.applied} ${siteLanguage === "en" ? "Monthly limit" : siteLanguage === "kk" ? "Айлық лимит" : "Лимит за месяц"}: ${result.used}/${result.limit}.` }]);
     } catch (exception) {
       setAiMessages((current) => [...current, { role: "assistant", text: `${aiCopy.error} ${exception.message}` }]);
@@ -272,7 +285,7 @@ export default function BotFlowEditor() {
       return;
     }
 
-    if (isWorkflowCreationRequest(input)) {
+    if (isWorkflowCreationRequest(input) || (!editing && isAllFeatureRequest(input))) {
       const questions = getWorkflowClarificationQuestions(input, { businessName, description, template: templates[category]?.label, locale: siteLanguage });
       setAiClarification({ original: input, questions });
       setAiMessages((current) => [...current, { role: "assistant", text: `${aiCopy.intro}\n\n1. ${questions[0]}\n\n2. ${questions[1]}` }]);
