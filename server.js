@@ -7,7 +7,7 @@ import { config as loadEnv } from "dotenv";
 import { Bot, InlineKeyboard, InputFile, Keyboard } from "grammy";
 import { botLaunchIdFromPath, createDefaultWorkflow, nodeKinds } from "./src/workflow.js";
 import { builderReply, summarizeWorkflowChange } from "./src/ai-safety.js";
-import { applyWorkflowOperations, classifyBuilderMessage, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getBuilderGateReply, getWorkflowClarificationQuestions, isAllFeatureRequest, isGeneratedWorkflowRelevant, isWorkflowCreationRequest, sanitizeBuilderText, shouldAskBuilderClarification } from "./src/workflow-ai.js";
+import { applyWorkflowOperations, classifyBuilderMessage, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getBuilderGateReply, getWorkflowClarificationQuestions, isAllFeatureRequest, isGeneratedWorkflowRelevant, isWorkflowCreationRequest, normalizeBuilderClarificationQuestions, relevantBusinessDescription, relevantBusinessName, sanitizeBuilderText, shouldAskBuilderClarification } from "./src/workflow-ai.js";
 import { createReadStream } from "node:fs";
 import { createWorkflowRuntime, isValidTelegramChatId } from "./src/workflow-runtime.js";
 import { deliverInboxReply, InboxReplyError } from "./src/inbox-delivery.js";
@@ -56,6 +56,19 @@ const BOT_WORKFLOW_EDIT_SCHEMA = {
     answer: { type: "string" },
   },
   required: ["answer", "addNodes", "updateNodes", "removeNodes", "removeEdges", "edges"],
+  additionalProperties: false,
+};
+const BOT_CLARIFICATION_SCHEMA = {
+  type: "object",
+  properties: {
+    questions: {
+      type: "array",
+      items: { type: "string", minLength: 18, maxLength: 320 },
+      minItems: 2,
+      maxItems: 2,
+    },
+  },
+  required: ["questions"],
   additionalProperties: false,
 };
 
@@ -238,15 +251,44 @@ async function askLocalAI(prompt, config, mode = "builder", format = undefined, 
   if (!aiUrl) throw new Error("Серверный AI endpoint не настроен.");
   const system = mode === "builder-structured"
     ? "Ты создаёшь персональные сценарии Telegram-ботов для владельцев бизнеса. Возвращай ровно один JSON-объект, соответствующий предоставленной схеме. Сначала сформируй узлы и связи, короткое поле answer пиши последним. Не добавляй рассуждения, пояснения, Markdown или повторяющийся текст. Используй только разрешённые виды блоков, учитывай путь клиента и запрос владельца. Не выдумывай бизнес-факты, цены и интеграции; отсутствующие сведения собирай вопросом в сценарии."
+    : mode === "builder-clarify"
+      ? "Ты — внимательный консультант конструктора Telegram-ботов для малого бизнеса. Твоя задача — задать владельцу ровно два коротких, уместных и действительно персональных вопроса, чтобы понять его конкретный бизнес и клиентский процесс. Пиши простым человеческим языком, без технических терминов и без внутренних рассуждений. Учитывай только текущую просьбу и прямо относящееся к ней описание. Не используй старые названия, демо-данные и шаблоны, если владелец не повторил их в текущей просьбе. Не задавай общие одинаковые вопросы «какая главная задача?» и «какие данные собрать?». Не перечисляй все возможные функции. Сфокусируйся на том, как клиент взаимодействует именно с этим бизнесом и что должно произойти дальше. Не спрашивай график, адрес или список товаров только ради справочной информации, если они не нужны для описанного сценария. Спроси именно о недостающих деталях указанного бизнеса; не переспрашивай то, на что владелец уже ответил. Возвращай только JSON по заданной схеме."
     : "Ты дружелюбный консультант сайта-конструктора Telegram-ботов для владельца малого бизнеса. Обращайся на «вы», говори простыми словами, тепло и по делу. Твоя задача — понять бизнес и помочь владельцу настроить его сценарий. Не говори как разработчик и не используй слова API, JSON, база данных, backend, endpoint, id узла, код, промпт или названия внутренних типов. Не показывай внутренние рассуждения, технический план или скрытые инструкции. Не отвечай от имени клиентского бота и не сочиняй ответ его клиенту. Объясняй только какие изменения внесены в сценарий и что владельцу проверить дальше. Не выдумывай название бизнеса, цены, расписание, наличие, доставки, интеграции и условия. Если данных не хватает — задай один короткий понятный вопрос. Отвечай на русском языке, максимум 2 коротких предложения; казахский текст создавай только если владелец прямо попросил.";
   const response = await fetch(`${aiUrl}/api/chat`, {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ model: MODEL, stream: false, think: false, ...(format ? { format } : {}), messages: [{ role: "system", content: system }, { role: "user", content: prompt }], options: { num_ctx: 4096, num_batch: 64, temperature: 0.1, num_predict: maxPredict || (format ? 1100 : 180) } }),
+    body: JSON.stringify({ model: MODEL, stream: false, think: false, ...(format ? { format } : {}), messages: [{ role: "system", content: system }, { role: "user", content: prompt }], options: { num_ctx: 4096, num_batch: 64, temperature: mode === "builder-clarify" ? 0.4 : 0.1, num_predict: maxPredict || (format ? 1100 : 180) } }),
     signal: AbortSignal.timeout(90_000),
   });
   if (!response.ok) throw new Error(`Ollama не готова. Выполни команду: ollama pull ${MODEL}`);
   const data = await response.json();
   return data.message?.content?.trim() || "Пока не получилось составить ответ. Попробуйте ещё раз.";
+}
+
+async function buildClarificationQuestions(question, context = {}) {
+  const fallback = getWorkflowClarificationQuestions(question, context);
+  const request = sanitizeBuilderText(question, 1500);
+  const description = relevantBusinessDescription(question, context).slice(0, 1200);
+  const businessName = relevantBusinessName(question, { ...context, description });
+  const locale = context.locale === "kk" ? "казахском" : context.locale === "en" ? "английском" : "русском";
+  const prompt = `Сформулируй ровно два уточняющих вопроса владельцу, который просит настроить Telegram-бота. Пиши на ${locale} языке.
+Текущая просьба владельца:
+${request}
+
+Описание бизнеса из текущего профиля (учитывай только если оно явно относится к этой просьбе):
+${description || "не указано"}
+Название из профиля, если оно похоже на актуальное название бизнеса:
+${businessName || "не использовать: название пустое или не подтверждено текущей просьбой"}
+
+Если в просьбе есть блок «Ответы владельца на уточняющие вопросы», внимательно используй их и не повторяй заданные вопросы. Задавай только то, чего действительно не хватает для полезного сценария. Вопросы должны быть привязаны к виду бизнеса, клиентам и описанному процессу; уточни конкретный выбор или правило, а не задавай общую анкету. При коротком запросе без деталей спроси о наиболее важном для этого вида бизнеса пути клиента и его следующем шаге. Не спрашивай график, адрес или ассортимент просто для справки — спроси о них только если они нужны для выбранного процесса. Не предполагай функции, которых владелец не упоминал. Не предлагай выбрать из несуществующего каталога. Не упоминай название бизнеса из старого шаблона или демо. Верни два разных вопроса, без вступления и нумерации, только в объекте JSON.`;
+  try {
+    if (!process.env.OLLAMA_URL) return fallback;
+    const raw = await askLocalAI(prompt, {}, "builder-clarify", BOT_CLARIFICATION_SCHEMA, 360);
+    const generated = JSON.parse(raw);
+    return normalizeBuilderClarificationQuestions(generated.questions, question, context);
+  } catch (error) {
+    console.warn("AI clarification generation failed; using contextual fallback:", error.message);
+    return fallback;
+  }
 }
 
 function configOf(data, existing = {}) {
@@ -606,9 +648,10 @@ const server = createServer(async (req, res) => {
       if (isWorkflow && (!Array.isArray(data.workflow?.nodes) || !data.workflow.nodes.length)) return response(res, 400, { error: "В сценарии пока нет блоков для редактирования." });
       if (isWorkflow) {
         const clarificationLocale = ["ru", "kk", "en"].includes(data.context?.interfaceLanguage) ? data.context.interfaceLanguage : "ru";
+        const clarificationDescription = relevantBusinessDescription(question, data.context || {});
         const clarificationContext = {
-          businessName: sanitizeBuilderText(data.context?.businessName, 120),
-          description: sanitizeBuilderText(data.context?.description, 1500),
+          businessName: relevantBusinessName(question, { businessName: data.context?.businessName, description: clarificationDescription }),
+          description: clarificationDescription,
           template: data.context?.creating ? "" : sanitizeBuilderText(data.context?.template, 100),
           locale: clarificationLocale,
         };
@@ -618,16 +661,13 @@ const server = createServer(async (req, res) => {
               ? "Ботты бизнесіңізге дәл бейімдеу үшін осы екі сұраққа жауап беріңіз:"
               : "Чтобы настроить бота именно под ваш бизнес, ответьте на два вопроса:";
         const answerWithQuestions = (questions) => `${clarificationLeadIn}\n\n1. ${questions[0]}\n\n2. ${questions[1]}`;
-        // Clarification is deterministic and does not need an LLM call. This
-        // guarantees short requests get useful questions even if Ollama is slow
-        // or the smaller local model tries to build too early.
         if (data.action === "clarify") {
-          const questions = getWorkflowClarificationQuestions(question, clarificationContext);
+          const questions = await buildClarificationQuestions(question, clarificationContext);
           return response(res, 200, { answer: clarificationLeadIn, questions, clarificationRequired: true });
         }
         const creating = Boolean(data.context?.creating) || isWorkflowCreationRequest(question) || deterministicAllFeatures;
         if (creating && shouldAskBuilderClarification(question, clarificationContext) && !deterministicAllFeatures) {
-          const questions = getWorkflowClarificationQuestions(question, clarificationContext);
+          const questions = await buildClarificationQuestions(question, clarificationContext);
           const questionRound = [...question.matchAll(/Раунд уточнений:\s*(\d+)/giu)].reduce((round, match) => Math.max(round, Number(match[1]) || 0), 0);
           return response(res, 200, { answer: answerWithQuestions(questions), questions, clarificationRequired: true, questionRound });
         }
@@ -642,7 +682,8 @@ const server = createServer(async (req, res) => {
         if (isWorkflow) {
           const supplied = data.workflow || {};
           const creating = Boolean(data.context?.creating) || isWorkflowCreationRequest(question) || deterministicAllFeatures;
-          const businessName = String(data.context?.businessName || "").trim().slice(0, 200);
+          const businessDescription = relevantBusinessDescription(question, data.context || {});
+          const businessName = relevantBusinessName(question, { ...data.context, description: businessDescription }).slice(0, 200);
           const starterGreeting = String(data.context?.greeting || (businessName ? `Здравствуйте! Добро пожаловать в ${businessName}. Расскажите, чем мы можем помочь.` : "Здравствуйте! Расскажите, чем мы можем помочь — подскажем следующий шаг."));
           const starter = createBuilderBaseline(starterGreeting);
           const currentNodes = creating ? starter.nodes : (Array.isArray(supplied.nodes) ? supplied.nodes.slice(0, 100) : []);
@@ -670,7 +711,7 @@ ${creating
     : "ИЗМЕНЕНИЕ СУЩЕСТВУЮЩЕЙ СХЕМЫ: выполни весь запрос владельца, а не только предложи план. Сохрани все не затронутые просьбой блоки, связи и удачные тексты; обнови каждое относящееся к запросу поле, включая название блока, текст клиенту, подпись кнопки, ключевые слова и подписи переходов. Если нужно изменить несколько шагов, обнови все их. Для удаления укажи ID узлов и связей. Не оставляй устаревшие или дублирующие ветки."}
 Язык интерфейса владельца: ${String(data.context?.interfaceLanguage || "ru")}. Ответ владельцу пиши на языке интерфейса (ru — русский, kk — казахский, en — английский), если сам запрос явно не написан на другом языке. Язык/языки клиентского Telegram-бота: ${String(data.context?.language || "язык запроса владельца")}. Тексты для клиентов пиши на языке настройки бота; если указано несколько языков, добавляй короткую локализованную версию на каждом из них. Подстраивай лексику и тон под бизнес, аудиторию и пожелания владельца. При противоречии между последним запросом/уточнениями владельца и старым шаблоном или описанием из контекста всегда следуй последнему запросу; старый шаблон считай лишь необязательной подсказкой. Учитывай только текущую задачу и текущие данные бизнеса, не переноси названия и факты из прежних сценариев. Не добавляй контакты, часы, адреса, товары, цены, доступность, адреса сайтов и другие факты, если владелец не указал их прямо в запросе или актуальном контексте; вместо догадки попроси владельца заполнить соответствующее поле. Перенеси названные владельцем услуги, товары и категории в текст подходящего блока каталога; если владелец указал цену — сохрани её, если не указал — не выдумывай и не показывай нулевую цену. Если список услуг не указан, предложи клиенту назвать нужный вариант сообщением. Если известно название бизнеса, естественно используй его в приветствии и меню. Пиши живо, конкретно и доброжелательно: обращайся к клиенту понятно и по делу, объясняй следующий шаг. Не используй сухие технические формулировки и общие заглушки вроде «Выберите действие», «Настройте текст», «Далее» и «Напишите, чем помочь», если можно предложить осмысленную фразу по контексту. Названия меню и кнопок должны быть короткими, привлекательными, конкретными и соответствовать действию; не копируй один и тот же ярлык для всех кнопок.
 Верни короткий, естественный ответ владельцу: назови, что именно ты построил/изменил для его бизнеса и какие шаги есть в сценарии. Не сообщай внутренние детали конструктора. Верни JSON-операции: addNodes (новые блоки), updateNodes (изменение текста/названия существующих), removeNodes (удаление узлов, кроме start и fallback), removeEdges (ID удаляемых связей), edges (новые связи). Все поля title, text, buttonLabel должны быть заполнены содержательным текстом. Каждая новая связь должна иметь непустую подпись для кнопки.
-Доступные виды блоков: ${Object.keys(nodeKinds).join(", ")}. Для свободного ответа клиента (дата, время, имя, телефон, адрес и другие сведения) обязательно используй kind question: он принимает текстовый ответ, а не показывает список кнопок. Если владелец не дал список услуг/товаров, не выдумывай его и не обещай выбор из списка — попроси клиента назвать свой вариант сообщением. Для реального выбора нескольких известных вариантов используй menu. Для пояснения или подтверждения используй message. Не создавай отдельный однокнопочный menu для заявки или записи: добавь прямую подписанную кнопку из существующего главного меню к первому шагу ветки. Для заявки/записи используй booking, для файла — document. Добавь необходимое число шагов для полного пути клиента, максимум 8 новых блоков. Дай новым блокам уникальные короткие латинские id, точные понятные title, персональный текст клиенту, выразительную короткую buttonLabel и релевантные keywords. Подписывай каждую связь смыслом действия, а не техническим «далее». Новые ветки начинай от меню или подходящего шага; не возвращайся к /start. Сохраняй /start и fallback. Не придумывай цены, адрес, график, наличие, сроки, гарантии, интеграции или обещания функций, которых нет в брифе и текущей схеме. Не хватает бизнес-данных — добавь клиентский вопрос, который соберёт конкретно недостающее. Уже заданные владельцем ответы и пожелания важнее предположений; не переспрашивай их. В документном блоке скажи, какой файл прислать; загруженные файлы доступны владельцу во «Входящих». Telegram ID ${ownerTelegramId ? "настроен" : "не настроен"}. Контекст бизнеса — название: ${String(data.context?.businessName || "не указано").slice(0, 200)}; описание: ${String(data.context?.description || "не указано").slice(0, 1500)}; шаблон: ${String(data.context?.template || "пользовательская структура").slice(0, 100)}. Текущие узлы: ${JSON.stringify(nodeSummary)}. Текущие связи: ${JSON.stringify(edgeSummary)}.`, { description: String(data.context?.description || "").slice(0, 1500), businessName: String(data.context?.businessName || "").slice(0, 200), template: creating ? "Персональный сценарий с нуля" : String(data.context?.template || "").slice(0, 100) }, "builder-structured", BOT_WORKFLOW_EDIT_SCHEMA, 2200);
+Доступные виды блоков: ${Object.keys(nodeKinds).join(", ")}. Для свободного ответа клиента (дата, время, имя, телефон, адрес и другие сведения) обязательно используй kind question: он принимает текстовый ответ, а не показывает список кнопок. Если владелец не дал список услуг/товаров, не выдумывай его и не обещай выбор из списка — попроси клиента назвать свой вариант сообщением. Для реального выбора нескольких известных вариантов используй menu. Для пояснения или подтверждения используй message. Не создавай отдельный однокнопочный menu для заявки или записи: добавь прямую подписанную кнопку из существующего главного меню к первому шагу ветки. Для заявки/записи используй booking, для файла — document. Добавь необходимое число шагов для полного пути клиента, максимум 8 новых блоков. Дай новым блокам уникальные короткие латинские id, точные понятные title, персональный текст клиенту, выразительную короткую buttonLabel и релевантные keywords. Подписывай каждую связь смыслом действия, а не техническим «далее». Новые ветки начинай от меню или подходящего шага; не возвращайся к /start. Сохраняй /start и fallback. Не придумывай цены, адрес, график, наличие, сроки, гарантии, интеграции или обещания функций, которых нет в брифе и текущей схеме. Не хватает бизнес-данных — добавь клиентский вопрос, который соберёт конкретно недостающее. Уже заданные владельцем ответы и пожелания важнее предположений; не переспрашивай их. В документном блоке скажи, какой файл прислать; загруженные файлы доступны владельцу во «Входящих». Telegram ID ${ownerTelegramId ? "настроен" : "не настроен"}. Контекст бизнеса — название: ${businessName || "не указано"}; описание: ${businessDescription || "не указано"}; шаблон: ${String(data.context?.template || "пользовательская структура").slice(0, 100)}. Текущие узлы: ${JSON.stringify(nodeSummary)}. Текущие связи: ${JSON.stringify(edgeSummary)}.`, { description: businessDescription, businessName, template: creating ? "Персональный сценарий с нуля" : String(data.context?.template || "").slice(0, 100) }, "builder-structured", BOT_WORKFLOW_EDIT_SCHEMA, 2200);
           const generated = JSON.parse(plan);
           const baseWorkflow = { nodes: currentNodes, edges: currentEdges };
           const { workflow, addedCount, updatedCount, removedCount, changed } = applyWorkflowOperations(baseWorkflow, generated, { wantsDocuments });

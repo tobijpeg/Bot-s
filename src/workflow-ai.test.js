@@ -1,7 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { createDefaultWorkflow, nodeKinds, workflowPresets } from "./workflow.js";
-import { applyWorkflowOperations, classifyBuilderMessage, cleanTemplateDataForGeneratedWorkflow, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getBuilderGateReply, getWorkflowClarificationQuestions, isAllFeatureRequest, isBuilderCreationIntent, isGeneratedWorkflowRelevant, isWorkflowCreationRequest, normalizeBuilderClarificationQuestions, normalizeGeneratedNode, sanitizeBuilderText, shouldAskBuilderClarification } from "./workflow-ai.js";
+import { applyWorkflowOperations, classifyBuilderMessage, cleanTemplateDataForGeneratedWorkflow, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getBuilderGateReply, getWorkflowClarificationQuestions, isAllFeatureRequest, isBuilderCreationIntent, isGeneratedWorkflowRelevant, isWorkflowCreationRequest, normalizeBuilderClarificationQuestions, normalizeGeneratedNode, relevantBusinessDescription, relevantBusinessName, sanitizeBuilderText, shouldAskBuilderClarification } from "./workflow-ai.js";
 
 const block = (id, kind, title, text, buttonLabel = title) => ({ id, kind, title, text, buttonLabel, keywords: "" });
 
@@ -37,6 +37,7 @@ test("builder filters greet politely and reject unrelated input without treating
   assert.equal(classifyBuilderMessage("WhatsApp, завтра в 17:00", { hasPendingClarification: true }), "builder");
   assert.equal(classifyBuilderMessage("Да", { hasPendingClarification: true }), "builder");
   assert.equal(classifyBuilderMessage("Маникюр и педикюр", { hasPendingClarification: true }), "builder");
+  assert.equal(classifyBuilderMessage("Сделай всё, что сам считаешь нужным", { hasPendingClarification: true }), "builder");
   assert.equal(classifyBuilderMessage("А какой фильм посмотреть?", { hasPendingClarification: true }), "off_topic");
   assert.equal(classifyBuilderMessage("Создай бота для фотостудии"), "builder");
   assert.equal(classifyBuilderMessage("Добавь в сценарий шаг с телефоном"), "builder");
@@ -49,6 +50,8 @@ test("creation clarification depends on whether the owner already gave useful wo
   assert.equal(shouldAskBuilderClarification("Сделай бота для кофейни", { description: "Кофейня в Астане" }), true);
   assert.equal(shouldAskBuilderClarification("Создай бота для мастерской: собери модель и описание поломки, потом попроси телефон и отправь заявку владельцу"), false);
   assert.equal(shouldAskBuilderClarification("Создай бота со всеми функциями"), false);
+  const delegated = "Сделай бота для кофейни\nОтветы владельца на уточняющие вопросы:\nВопросы: Что должен делать бот?\nОтветы: сделай все что сам считаешь\nРаунд уточнений: 1";
+  assert.equal(shouldAskBuilderClarification(delegated), false, "an owner who delegates choices should not be asked the same questions again");
 });
 
 test("clarification follow-ups use the owner's answers and avoid repeating the initial pair", () => {
@@ -64,9 +67,19 @@ test("clarification follow-ups use the owner's answers and avoid repeating the i
   assert.equal(shouldAskBuilderClarification(answered), false);
   const noSpecificAnswer = "Сделай бота для кофейни\nОтветы владельца на уточняющие вопросы:\nОтветы: да.\nРаунд уточнений: 1";
   const rephrased = getWorkflowClarificationQuestions(noSpecificAnswer, { businessName: "Кофе рядом" });
-  assert.match(rephrased[0], /главную задачу/iu);
+  assert.match(rephrased[0], /гост|кофейн|напит|заказ/iu);
   assert.notEqual(rephrased[0], getWorkflowClarificationQuestions("Сделай бота для кофейни")[0]);
   assert.equal(shouldAskBuilderClarification(noSpecificAnswer + "\nРаунд уточнений: 2"), false, "never trap the owner in an endless clarification loop");
+  assert.doesNotMatch(getWorkflowClarificationQuestions(noSpecificAnswer, { businessName: "hackathon" }).join(" "), /hackathon/iu, "stale demo names must not leak into questions");
+});
+
+test("current business brief wins over stale profile and demo names", () => {
+  assert.equal(relevantBusinessName("Сделай бота для кофейни", { businessName: "hackathon" }), "");
+  assert.equal(relevantBusinessName("Сделай бота для кофейни", { businessName: "Магазин Альфа" }), "");
+  assert.equal(relevantBusinessName("Сделай бота для кофейни", { businessName: "Coffee House", description: "Кофейня в Алматы" }), "Coffee House");
+  assert.equal(relevantBusinessDescription("Сделай бота для кофейни", { description: "Профиль hackathon demo" }), "");
+  assert.equal(relevantBusinessDescription("Сделай бота для кофейни", { description: "Интернет-магазин одежды" }), "");
+  assert.equal(relevantBusinessDescription("Сделай бота для кофейни", { description: "Кофейня в Алматы, напитки навынос" }), "Кофейня в Алматы, напитки навынос");
 });
 
 test("new workflow generation rejects stale or unrelated model output for the current business", () => {

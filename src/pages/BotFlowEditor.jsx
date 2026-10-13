@@ -5,7 +5,7 @@ import "@xyflow/react/dist/style.css";
 import { useCreateBot } from "../context/CreateBotContext.jsx";
 import { useSitePreferences } from "../context/SitePreferencesContext.jsx";
 import { createDefaultWorkflow, nodeCategories, nodeKinds, workflowPresets } from "../workflow.js";
-import { classifyBuilderMessage, cleanTemplateDataForGeneratedWorkflow, getBuilderGateReply, isAllFeatureRequest, isBuilderCreationIntent, isBuilderEditRequest, isWorkflowCreationRequest, sanitizeBuilderText, shouldAskBuilderClarification } from "../workflow-ai.js";
+import { classifyBuilderMessage, cleanTemplateDataForGeneratedWorkflow, getBuilderGateReply, isAllFeatureRequest, isBuilderCreationIntent, isBuilderEditRequest, isWorkflowCreationRequest, relevantBusinessDescription, relevantBusinessName, sanitizeBuilderText, shouldAskBuilderClarification } from "../workflow-ai.js";
 import { supabase, supabaseSetupError } from "../lib/supabase.js";
 import { apiFetch } from "../lib/api.js";
 
@@ -416,7 +416,9 @@ export default function BotFlowEditor() {
     const creationIntent = isWorkflowCreationRequest(input) || (!editing && isBuilderCreationIntent(input)) || (!editing && isAllFeatureRequest(input));
     const template = templates[category];
     const promptDescription = description === template?.description ? "" : description;
-    if (creationIntent && !editing && shouldAskBuilderClarification(input, { description: promptDescription, businessName })) {
+    const currentDescription = relevantBusinessDescription(input, { description: promptDescription });
+    const currentBusinessName = relevantBusinessName(input, { businessName, description: currentDescription });
+    if (creationIntent && !editing && shouldAskBuilderClarification(input, { description: currentDescription, businessName: currentBusinessName })) {
       await requestAIClarification(input, conversation);
       return;
     }

@@ -23,6 +23,7 @@ const BUILDER_SCOPE_SIGNAL = /(?:telegram|телеграм|\bтг\b|бот(?:а|
 const BUSINESS_TASK_SIGNAL = /(?:клиент|заявк|запис|брон|заказ|достав|каталог|товар|услуг|поддержк|оплат|документ|файл|подписк|курс|ученик|школ|салон|барбер|магазин|кафе|кофейн|ресторан|ремонт|сервис|клиник|студия|ателье|фотограф|мастер|бизнес|business|customer|booking|order|delivery|catalog|support|appointment|shop|store|salon|course|repair|clinic|studio|submit|coffee|cafe|restaurant|заяв|тапсырыс|жеткіз|жазыл|клиент|дүкен|сұлулық|қызмет)/iu;
 const CLARIFICATION_ANSWER_SIGNAL = /(?:имя|аты|телефон|номер|байланыс|адрес|мекенжай|город|қала|дата|күн|время|уақыт|услуг|қызмет|заказ|тапсырыс|товар|тауар|количеств|гост|адам|клиент|мастер|врач|ученик|курс|достав|жеткіз|самовывоз|навынос|подтверж|раста|уведом|входящ|заявк|оплат|kaspi|касса|налич|завтра|сегодня|утром|вечером|позже|кажд|ежеднев|перв|втор|трет|понедельник|вторник|сред|четверг|пятниц|суббот|воскресен|выходн|будн|онлайн|офлайн|лично|очно|дистанц|zoom|whatsapp|казах|русск|англ|\bда\b|\bнет\b|\b\d+\b|email|e-mail|telegram|\bв\b.{0,20}\d{1,2}:\d{2})/iu;
 const UNRELATED_CHAT_SIGNAL = /(?:погод|анекдот|домашк|фильм|сериал|игр(?:а|у|ы)?|математик|физик|хими|политик|рецепт|гороскоп|мем)/iu;
+const OWNER_DELEGATES_CHOICES = /(?:сделай|выбери|реши|придумай|заполни|оформи|собери|построй|делай|выбирай|решай|придумывай|заполняй).{0,45}(?:сам(?:а|и)?|на\s+сво[её] усмотрени|как\s+(?:ты|считаешь|будет)\s+(?:лучше|правильн)|по\s+умолчани|без\s+уточнен|без\s+вопрос)|(?:сам(?:а|и)?\s+(?:реши|выбери|придумай|сделай|заполни)|на\s+тво[её]\s+усмотрени|как\s+считаешь\s+нужным|мне\s+все\s+равно|мне\s+без\s+разниц|не\s+спрашивай|любые\s+детали\s+сам|use\s+your\s+judg(?:e)?ment|you\s+decide|do\s+what\s+you\s+think\s+best|whatever\s+you\s+think|as\s+you\s+see\s+fit|өзің\s+шеш|өзің\s+таңда|қалауыңша)/iu;
 
 export function sanitizeBuilderText(value, maxLength = 1200) {
   return String(value || "").replace(/\b\d{6,12}:[A-Za-z0-9_-]{25,}\b/g, "[токен Telegram скрыт]").trim().slice(0, maxLength);
@@ -32,6 +33,7 @@ export function classifyBuilderMessage(value, { hasPendingClarification = false 
   const text = String(value || "").trim();
   if (GREETING_ONLY.test(text)) return "greeting";
   if (hasPendingClarification && UNRELATED_CHAT_SIGNAL.test(text)) return "off_topic";
+  if (hasPendingClarification && OWNER_DELEGATES_CHOICES.test(text)) return "builder";
   if (BUILDER_SCOPE_SIGNAL.test(text) || BUSINESS_TASK_SIGNAL.test(text)) return "builder";
   if (hasPendingClarification && CLARIFICATION_ANSWER_SIGNAL.test(text)) return "builder";
   if (hasPendingClarification && /^(?:да|нет|хорошо|подходит|не знаю|иә|жоқ|болады|yes|no|okay|ok)[!,.?\s]*$/iu.test(text)) return "builder";
@@ -84,6 +86,7 @@ export function shouldAskBuilderClarification(question, context = {}) {
   // unrelated older chat turns or the helper instructions appended by the UI.
   const clarification = parseClarificationContext(question);
   if (clarification.round >= 2) return false;
+  if (OWNER_DELEGATES_CHOICES.test(clarification.answers) || OWNER_DELEGATES_CHOICES.test(clarification.request)) return false;
   const text = [clarification.request, clarification.answers, context.description, context.businessName]
     .filter(Boolean)
     .join("\n")
@@ -139,6 +142,24 @@ export function detectWorkflowBusinessType(question, context = {}) {
   const existingContext = [context.businessName, context.description, context.template].filter(Boolean).join(" ");
   const contextMatches = BUSINESS_TYPE_HINTS.map(({ kind, match }) => ({ kind, index: lastMatchIndex(existingContext, match) })).filter(({ index }) => index >= 0);
   return contextMatches.length ? contextMatches.reduce((latest, entry) => entry.index > latest.index ? entry : latest).kind : "general";
+}
+
+export function relevantBusinessName(question, context = {}) {
+  const name = sanitizeBuilderText(context.businessName, 120);
+  if (!name || /^(?:hackathon|test(?:ing)?|demo|пример|тест|тестовый|шаблон|мой бизнес|название бизнеса)$/iu.test(name)) return "";
+  const requestedType = detectWorkflowBusinessType(question);
+  const profileType = detectWorkflowBusinessType(`${context.description || ""} ${name}`);
+  if (requestedType !== "general" && profileType !== "general" && requestedType !== profileType) return "";
+  return name;
+}
+
+export function relevantBusinessDescription(question, context = {}) {
+  const description = sanitizeBuilderText(context.description, 1500);
+  if (!description || /\b(?:hackathon|demo|sample profile|test business|демо[- ]?данн|тестов(?:ый|ая) профиль)\b/iu.test(description)) return "";
+  const requestedType = detectWorkflowBusinessType(question);
+  const profileType = detectWorkflowBusinessType(description);
+  if (requestedType !== "general" && profileType !== "general" && requestedType !== profileType) return "";
+  return description;
 }
 
 export function isGeneratedWorkflowRelevant(question, workflow, context = {}) {
@@ -238,12 +259,22 @@ export function getWorkflowClarificationQuestions(question, context = {}) {
       || /(?:телефон|номер|адрес|дата|время|имя|контакт|phone|address|date|time|name|contact)/iu.test(context.description || "");
     const nextStepKnown = /(?:подтверд|владельц|администратор|менеджер|входящ|уведом|связаться|перезвон|оператор|после этого|потом|затем|confirm|notify|owner|inbox|after that|operator)/iu.test(answers);
     const followups = [];
-    const business = String(context.businessName || "ваш бизнес").trim();
+    const businessKind = detectWorkflowBusinessType(request, context);
+    const businessLabels = {
+      cafe: { ru: "кофейни", kk: "кофехананың", en: "the cafe" },
+      repair: { ru: "сервисного центра", kk: "сервис орталығының", en: "the service center" },
+      shop: { ru: "магазина", kk: "дүкеннің", en: "the shop" },
+      beauty: { ru: "салона", kk: "салонның", en: "the salon" },
+      education: { ru: "учебного проекта", kk: "оқу жобасының", en: "the course" },
+      medical: { ru: "клиники", kk: "клиниканың", en: "the clinic" },
+      general: { ru: "вашего бизнеса", kk: "бизнесіңіздің", en: "your business" },
+    };
+    const business = businessLabels[businessKind]?.[locale] || businessLabels.general[locale];
     if (!goalKnown) {
       followups.push({
-        ru: `Чтобы меню для «${business}» получилось полезным, выберите главную задачу бота: заказ, запись/бронь, консультация или информация о компании?`,
-        kk: `«${business}» бизнесіне арналған мәзір пайдалы болуы үшін боттың негізгі міндетін таңдаңыз: тапсырыс, жазылу/брондау, кеңес немесе компания туралы ақпарат па?`,
-        en: `To make the menu useful for ${business}, what should be the bot’s main job: orders, bookings, advice, or company information?`,
+        ru: `Какой первый результат должен получить гость ${business}: выбрать напиток или десерт, оформить заказ, забронировать место или связаться с вами по другому вопросу?`,
+        kk: `${business} қонағы алдымен қандай нәтиже алуы керек: сусын не десерт таңдау, тапсырыс беру, орын брондау немесе басқа сұрақпен сізге жазу ма?`,
+        en: `What should a guest at ${business} accomplish first: choose a drink or dessert, place an order, reserve a table, or contact you about something else?`,
       }[locale]);
     }
     if (!dataKnown) {
