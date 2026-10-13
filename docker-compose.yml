@@ -59,7 +59,7 @@ services:
     environment:
       OLLAMA_HOST: http://ollama:11434
     entrypoint: ["/bin/sh", "-c"]
-    command: ["until ollama list >/dev/null 2>&1; do sleep 2; done; ollama pull ${OLLAMA_MODEL:-qwen3:4b}"]
+    command: ["until ollama list >/dev/null 2>&1; do sleep 2; done; if ollama show '${OLLAMA_MODEL:-qwen3:4b}' >/dev/null 2>&1; then echo 'Configured AI model is already installed'; else ollama pull '${OLLAMA_MODEL:-qwen3:4b}'; fi"]
 
 volumes:
   platform_data:

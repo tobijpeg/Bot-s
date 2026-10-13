@@ -122,7 +122,7 @@ export default function BotFlowEditor() {
         ? memory.messages.slice(-40).filter((message) => ["user", "assistant"].includes(message?.role) && typeof message?.text === "string").map((message) => ({ role: message.role, text: sanitizeBuilderText(message.text, 1200) }))
         : [];
       const clarification = memory?.clarification && typeof memory.clarification.original === "string"
-        ? { original: sanitizeBuilderText(memory.clarification.original, 1200), questions: Array.isArray(memory.clarification.questions) ? memory.clarification.questions.slice(0, 2).map((item) => sanitizeBuilderText(item, 320)) : [], answers: Array.isArray(memory.clarification.answers) ? memory.clarification.answers.slice(-4).map((item) => sanitizeBuilderText(item, 900)) : [] }
+        ? { original: sanitizeBuilderText(memory.clarification.original, 1200), questions: Array.isArray(memory.clarification.questions) ? memory.clarification.questions.slice(0, 2).map((item) => sanitizeBuilderText(item, 320)) : [], answers: Array.isArray(memory.clarification.answers) ? memory.clarification.answers.slice(-4).map((item) => sanitizeBuilderText(item, 900)) : [], round: Math.max(0, Math.min(2, Number(memory.clarification.round) || 0)) }
         : null;
       setAiMessages(messages);
       setAiClarification(clarification);
@@ -140,6 +140,7 @@ export default function BotFlowEditor() {
       original: sanitizeBuilderText(aiClarification.original, 1200),
       questions: (aiClarification.questions || []).slice(0, 2).map((item) => sanitizeBuilderText(item, 320)),
       answers: (aiClarification.answers || []).slice(-4).map((item) => sanitizeBuilderText(item, 900)),
+      round: Math.max(0, Math.min(2, Number(aiClarification.round) || 0)),
     } : null;
     const savedAt = new Date().toISOString();
     try { localStorage.setItem(storageKey, JSON.stringify({ messages: safeMessages, clarification: safeClarification, savedAt })); } catch { /* Continue with Supabase persistence. */ }
@@ -318,6 +319,12 @@ export default function BotFlowEditor() {
       const response = await apiFetch("/api/ai/workflow", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Bearer " + authData.session.access_token }, body: JSON.stringify({ action: "build", question: sanitizeBuilderText(question, 2000), conversation: safeConversation, workflow: { nodes, edges }, context: requestContext }) });
       const result = await response.json();
       if (!response.ok) throw new Error(response.status === 401 ? aiCopy.sessionExpired : result.error || "ИИ не смог изменить сценарий.");
+      if (result.clarificationRequired && Array.isArray(result.questions)) {
+        const questions = result.questions.slice(0, 2);
+        setAiClarification({ original: question, questions, answers: [], round: Number(result.questionRound) || 0 });
+        setAiMessages((current) => [...current, { role: "assistant", text: result.answer || questions.map((item, index) => `${index + 1}. ${item}`).join("\n\n") }]);
+        return;
+      }
       if (result.ignored || !result.workflow) {
         setAiMessages((current) => [...current, { role: "assistant", text: result.answer || getBuilderGateReply("off_topic", siteLanguage) }]);
         return;
@@ -333,7 +340,7 @@ export default function BotFlowEditor() {
         const welcome = result.workflow.nodes.find((node) => node.id === "welcome")?.data?.text;
         if (welcome) setField("greeting", welcome);
       }
-      setAiMessages((current) => [...current, { role: "assistant", text: `${result.answer} ${aiCopy.applied} ${siteLanguage === "en" ? "Monthly limit" : siteLanguage === "kk" ? "Айлық лимит" : "Лимит за месяц"}: ${result.used}/${result.limit}.` }]);
+      setAiMessages((current) => [...current, { role: "assistant", text: `${result.answer} ${aiCopy.applied}` }]);
     } catch (exception) {
       setAiMessages((current) => [...current, { role: "assistant", text: `${aiCopy.error} ${exception.message}` }]);
     } finally { setAiBusy(false); }
@@ -373,7 +380,7 @@ export default function BotFlowEditor() {
       }
       const questions = Array.isArray(result.questions) ? result.questions.slice(0, 2) : [];
       if (questions.length < 2) throw new Error("ИИ не вернул два уточняющих вопроса. Попробуйте сформулировать задачу подробнее.");
-      setAiClarification({ original: question, questions, answers: [] });
+      setAiClarification({ original: question, questions, answers: [], round: 0 });
       setAiMessages((current) => [...current, { role: "assistant", text: result.answer + "\n\n1. " + questions[0] + "\n\n2. " + questions[1] }]);
     } catch (exception) {
       setAiMessages((current) => [...current, { role: "assistant", text: aiCopy.error + " " + exception.message }]);
@@ -395,17 +402,21 @@ export default function BotFlowEditor() {
 
     const conversation = [...aiMessages.filter((message) => message.role === "user").map((message) => message.text), input].slice(-8);
     if (aiClarification) {
-      const { original, answers = [] } = aiClarification;
+      const { original, questions = [], answers = [], round = 0 } = aiClarification;
       const allAnswers = [...answers, input].slice(-4);
       setAiClarification(null);
-      const clarificationText = allAnswers.map((answer, index) => (index + 1) + ". " + answer).join("\n");
-      const task = sanitizeBuilderText(original + "\nОтветы владельца на уточняющие вопросы:\n" + clarificationText + "\nВыполни исходную просьбу строго с учётом этих ответов. Сохрани бизнес, цель, данные и следующий шаг; не переспрашивай уже сообщённое.", 2000);
-      await requestAIScenario(task, conversation);
+      const clarificationText = `1. Вопросы: ${questions.join(" | ")}\nОтветы: ${allAnswers.join(" | ")}`;
+      const task = sanitizeBuilderText(original + "\nОтветы владельца на уточняющие вопросы:\n" + clarificationText + `\nРаунд уточнений: ${Math.min(2, Number(round) + 1)}\nВыполни исходную просьбу строго с учётом этих ответов. Сохрани бизнес, цель, данные и следующий шаг; не переспрашивай уже сообщённое.`, 2000);
+      // The active request and its answers are already embedded in `task`.
+      // Older requests in the saved chat must not contaminate a new bot.
+      await requestAIScenario(task, []);
       return;
     }
 
     const creationIntent = isWorkflowCreationRequest(input) || (!editing && isBuilderCreationIntent(input)) || (!editing && isAllFeatureRequest(input));
-    if (creationIntent && !editing && shouldAskBuilderClarification(input)) {
+    const template = templates[category];
+    const promptDescription = description === template?.description ? "" : description;
+    if (creationIntent && !editing && shouldAskBuilderClarification(input, { description: promptDescription, businessName })) {
       await requestAIClarification(input, conversation);
       return;
     }
@@ -415,7 +426,7 @@ export default function BotFlowEditor() {
       return;
     }
 
-    await requestAIScenario(input, conversation);
+    await requestAIScenario(input, creationIntent ? [] : conversation);
   }
 
   function skipAIClarification() {

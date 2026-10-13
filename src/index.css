@@ -24,49 +24,121 @@ h1, h2, h3 {
   font-family: "Manrope", system-ui, sans-serif;
 }
 
-html[data-theme="dark"] body {
-  background: radial-gradient(ellipse at 70% -15%, rgba(139, 92, 246, 0.13), transparent 38%), #101522;
-  color: #e2e8f0;
+html[data-theme="dark"] {
+  color-scheme: dark;
+  --surface: #171e2d;
+  --surface-raised: #1d2637;
+  --surface-muted: #263144;
+  --surface-border: #303b4e;
+  --text-primary: #e8edf7;
+  --text-muted: #aab5c8;
+  --text-subtle: #8290a7;
 }
 
+html[data-theme="dark"] body {
+  background: radial-gradient(ellipse at 70% -15%, rgba(139, 92, 246, 0.13), transparent 38%), #101522;
+  color: var(--text-primary);
+}
+
+/* Shared surfaces used by cards, forms, menus, and the workflow editor. */
 html[data-theme="dark"] .bg-canvas { background-color: #101522 !important; }
 html[data-theme="dark"] .bg-white,
+html[data-theme="dark"] .bg-white\/70,
 html[data-theme="dark"] .bg-white\/80,
 html[data-theme="dark"] .bg-white\/90,
-html[data-theme="dark"] .bg-white\/95 { background-color: #171e2d !important; }
+html[data-theme="dark"] .bg-white\/95 { background-color: var(--surface) !important; }
 html[data-theme="dark"] .bg-gray-50,
-html[data-theme="dark"] .bg-slate-50 { background-color: #1d2637 !important; }
+html[data-theme="dark"] .bg-slate-50,
+html[data-theme="dark"] .bg-slate-50\/70,
+html[data-theme="dark"] .bg-slate-50\/80 { background-color: var(--surface-raised) !important; }
 html[data-theme="dark"] .bg-gray-100,
-html[data-theme="dark"] .bg-slate-100 { background-color: #263144 !important; }
+html[data-theme="dark"] .bg-slate-100 { background-color: var(--surface-muted) !important; }
+html[data-theme="dark"] .bg-violet-50,
+html[data-theme="dark"] .bg-violet-50\/60,
+html[data-theme="dark"] .bg-violet-100 { background-color: #302747 !important; }
+html[data-theme="dark"] .bg-violet-200\/30,
+html[data-theme="dark"] .bg-accent-500\/5,
+html[data-theme="dark"] .bg-accent-500\/10 { background-color: rgba(139, 92, 246, 0.16) !important; }
+html[data-theme="dark"] .bg-blue-50 { background-color: #172a42 !important; }
+html[data-theme="dark"] .bg-amber-50 { background-color: #332b1a !important; }
+html[data-theme="dark"] .bg-red-50 { background-color: #351f2a !important; }
+html[data-theme="dark"] .bg-green-50,
+html[data-theme="dark"] .bg-emerald-50 { background-color: #18332f !important; }
+html[data-theme="dark"] button.bg-navy-950,
+html[data-theme="dark"] a.bg-navy-950 { background-color: #6844d6 !important; }
+html[data-theme="dark"] button.bg-navy-950:hover,
+html[data-theme="dark"] a.bg-navy-950:hover { background-color: #7957e5 !important; }
+html[data-theme="dark"] .bg-gradient-to-br { background-image: linear-gradient(135deg, #171e2d, #242039) !important; }
+
+/* Darken text that was designed for light surfaces while retaining semantic colors. */
 html[data-theme="dark"] .text-navy-950,
 html[data-theme="dark"] .text-navy-900,
+html[data-theme="dark"] .text-gray-800,
+html[data-theme="dark"] .text-gray-700,
 html[data-theme="dark"] .text-slate-800,
-html[data-theme="dark"] .text-slate-700 { color: #e8edf7 !important; }
+html[data-theme="dark"] .text-slate-700 { color: var(--text-primary) !important; }
 html[data-theme="dark"] .text-gray-600,
 html[data-theme="dark"] .text-gray-500,
-html[data-theme="dark"] .text-gray-400,
 html[data-theme="dark"] .text-slate-600,
-html[data-theme="dark"] .text-slate-500 { color: #aab5c8 !important; }
+html[data-theme="dark"] .text-slate-500 { color: var(--text-muted) !important; }
+html[data-theme="dark"] .text-gray-400,
+html[data-theme="dark"] .text-slate-400 { color: var(--text-subtle) !important; }
+html[data-theme="dark"] .text-amber-700,
+html[data-theme="dark"] .text-amber-800,
+html[data-theme="dark"] .text-amber-900,
+html[data-theme="dark"] .text-amber-950 { color: #f2d58d !important; }
+html[data-theme="dark"] .text-red-500,
+html[data-theme="dark"] .text-red-600,
+html[data-theme="dark"] .text-red-700 { color: #f3a5b6 !important; }
+html[data-theme="dark"] .text-violet-500,
+html[data-theme="dark"] .text-violet-600,
+html[data-theme="dark"] .text-violet-700,
+html[data-theme="dark"] .text-violet-800,
+html[data-theme="dark"] .text-violet-900,
+html[data-theme="dark"] .text-violet-950,
+html[data-theme="dark"] .text-accent-600,
+html[data-theme="dark"] .text-accent-700 { color: #c4b5fd !important; }
+html[data-theme="dark"] .text-blue-700,
+html[data-theme="dark"] .text-blue-800,
+html[data-theme="dark"] .text-blue-900 { color: #b8d6ff !important; }
+html[data-theme="dark"] .text-green-700,
+html[data-theme="dark"] .text-emerald-700 { color: #8de0c5 !important; }
+
+/* Low contrast borders and separators should not stay almost white. */
+html[data-theme="dark"] .border-white,
+html[data-theme="dark"] .border-white\/80,
+html[data-theme="dark"] .border-gray-50,
 html[data-theme="dark"] .border-gray-100,
 html[data-theme="dark"] .border-gray-200,
 html[data-theme="dark"] .border-slate-100,
 html[data-theme="dark"] .border-slate-200,
-html[data-theme="dark"] .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: #303b4e !important; }
+html[data-theme="dark"] .border-slate-200\/80,
+html[data-theme="dark"] .divide-gray-100 > :not([hidden]) ~ :not([hidden]) { border-color: var(--surface-border) !important; }
+html[data-theme="dark"] .border-gray-300 { border-color: #46536a !important; }
+html[data-theme="dark"] .border-violet-100,
+html[data-theme="dark"] .border-violet-200,
+html[data-theme="dark"] .border-violet-300,
+html[data-theme="dark"] .border-violet-400,
+html[data-theme="dark"] .border-blue-100 { border-color: #51446f !important; }
+html[data-theme="dark"] .border-amber-200,
+html[data-theme="dark"] .border-red-100 { border-color: #594437 !important; }
+
+/* Inputs need a real dark surface as well as readable text and native controls. */
 html[data-theme="dark"] input,
 html[data-theme="dark"] textarea,
-html[data-theme="dark"] select { color: #e8edf7; }
+html[data-theme="dark"] select { color: var(--text-primary); }
 html[data-theme="dark"] input::placeholder,
-html[data-theme="dark"] textarea::placeholder { color: #8290a7; }
-html[data-theme="dark"] .react-flow__controls-button { background: #171e2d !important; color: #dbe4f0 !important; fill: #dbe4f0 !important; border-color: #303b4e !important; }
-html[data-theme="dark"] .react-flow__minimap { background: #171e2d; border-color: #303b4e; }
-html[data-theme="dark"] .bg-slate-50\/70 { background-color: #131a28 !important; }
-html[data-theme="dark"] .bg-violet-50 { background-color: #282142 !important; }
-html[data-theme="dark"] .bg-blue-50 { background-color: #172a42 !important; }
-html[data-theme="dark"] .bg-amber-50 { background-color: #332b1a !important; }
-html[data-theme="dark"] .bg-red-50 { background-color: #351f2a !important; }
-html[data-theme="dark"] .bg-gradient-to-br { background-image: linear-gradient(135deg, #171e2d, #242039) !important; }
-html[data-theme="dark"] .text-amber-900,
-html[data-theme="dark"] .text-amber-950 { color: #f2d58d !important; }
-html[data-theme="dark"] .text-red-700 { color: #f3a5b6 !important; }
-html[data-theme="dark"] .text-violet-700 { color: #c4b5fd !important; }
-html[data-theme="dark"] .text-blue-800 { color: #b8d6ff !important; }
+html[data-theme="dark"] textarea::placeholder { color: var(--text-subtle); }
+html[data-theme="dark"] select option { color: var(--text-primary); background: var(--surface); }
+
+/* Canvas controls and map are rendered by React Flow outside the Tailwind components. */
+html[data-theme="dark"] .react-flow__controls,
+html[data-theme="dark"] .react-flow__controls-button { border-color: var(--surface-border) !important; }
+html[data-theme="dark"] .react-flow__controls-button { background: var(--surface) !important; color: #dbe4f0 !important; fill: #dbe4f0 !important; }
+html[data-theme="dark"] .react-flow__minimap { background: var(--surface); border-color: var(--surface-border); }
+html[data-theme="dark"] .react-flow__minimap-node { fill: #39435b !important; }
+html[data-theme="dark"] .react-flow__background pattern circle { fill: #39435b !important; }
+html[data-theme="dark"] .react-flow__edge-textbg { fill: var(--surface) !important; }
+html[data-theme="dark"] .react-flow__edge-text { fill: var(--text-muted) !important; }
+
+html[data-theme="dark"] * { scrollbar-color: #51446f #171e2d; }
