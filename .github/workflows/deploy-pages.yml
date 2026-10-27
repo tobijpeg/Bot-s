@@ -29,7 +29,7 @@ jobs:
         env:
           VITE_BASE_PATH: /Bot-s/
           # Temporary Quick Tunnel for the current Docker host; update when the tunnel URL changes.
-          VITE_API_BASE_URL: https://jason-fathers-draws-restrict.trycloudflare.com
+          VITE_API_BASE_URL: https://chelsea-task-whom-driving.trycloudflare.com
           VITE_SUPABASE_URL: ${{ vars.VITE_SUPABASE_URL }}
           VITE_SUPABASE_PUBLISHABLE_KEY: ${{ vars.VITE_SUPABASE_PUBLISHABLE_KEY }}
         run: |
