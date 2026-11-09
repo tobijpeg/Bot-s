@@ -6,7 +6,7 @@ export default function Landing() {
     <div className="min-h-screen bg-canvas">
       <header className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 md:px-10 md:py-4">
         <Logo />
-        <nav className=" shrink-0 git pullflex items-center gap-8 text-sm font-medium text-gray-600">
+        <nav className="flex shrink-0 items-center gap-4 text-sm font-medium text-gray-600 md:gap-8">
           <a href="#features" className="hover:text-navy-950 hidden md:inline">
             Возможности
           </a>
