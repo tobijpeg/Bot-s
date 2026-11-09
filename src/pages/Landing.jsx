@@ -4,13 +4,13 @@ import Logo from "../components/Logo.jsx";
 export default function Landing() {
   return (
     <div className="min-h-screen bg-canvas">
-      <header className="flex items-center justify-between border-b border-gray-200 bg-white px-10 py-4">
+      <header className="flex items-center justify-between gap-4 border-b border-gray-200 bg-white px-4 py-3 md:px-10 md:py-4">
         <Logo />
-        <nav className="flex items-center gap-8 text-sm font-medium text-gray-600">
-          <a href="#features" className="hover:text-navy-950">
+        <nav className=" shrink-0 git pullflex items-center gap-8 text-sm font-medium text-gray-600">
+          <a href="#features" className="hover:text-navy-950 hidden md:inline">
             Возможности
           </a>
-          <a href="#pricing" className="hover:text-navy-950">
+          <a href="#pricing" className="hover:text-navy-950 hidden md:inline">
             Цены
           </a>
           <Link to="/overview" className="hover:text-navy-950">
@@ -18,7 +18,7 @@ export default function Landing() {
           </Link>
           <Link
             to="/auth?mode=register"
-            className="rounded-lg bg-navy-950 px-4 py-2 text-white transition-colors hover:bg-navy-900"
+            className=" rounded-lg bg-navy-950 px-4 py-2 text-white transition-colors hover:bg-navy-900"
           >
             Начать бесплатно
           </Link>
