@@ -26,7 +26,7 @@ test("accepts omitted photo and rejects oversized or invalid Telegram profile fi
   assert.throws(() => normalizeTelegramProfile({ profilePhoto: { mimeType: "image/jpeg", dataBase64: Buffer.from("not a jpeg").toString("base64") } }), /500 КБ/);
 });
 
-test("applies only provided Telegram profile fields and uploads photo as a fresh InputFile", async () => {
+test("passes Telegram profile values as strings and uploads photo as a fresh InputFile", async () => {
   const calls = [];
   class FakeInputFile { constructor(data, filename) { this.data = data; this.filename = filename; } }
   const api = {
@@ -36,10 +36,28 @@ test("applies only provided Telegram profile fields and uploads photo as a fresh
     async setMyProfilePhoto(data) { calls.push(["photo", data]); },
   };
   await applyTelegramProfile(api, normalizeTelegramProfile({ name: "Cafe", shortDescription: "Меню", profilePhoto: { mimeType: "image/jpeg", dataBase64: jpeg.toString("base64") } }), FakeInputFile);
-  assert.deepEqual(calls.map(([method]) => method), ["name", "shortDescription", "photo"]);
-  assert.deepEqual(calls[1][1], { short_description: "Меню" });
+  assert.deepEqual(calls, [
+    ["name", "Cafe"],
+    ["shortDescription", "Меню"],
+    ["photo", { type: "static", photo: calls[2][1].photo }],
+  ]);
   assert.equal(calls[2][1].photo.filename, "bot-profile.jpg");
   assert.deepEqual(calls[2][1].photo.data, jpeg);
+});
+
+test("passes long and short descriptions as string arguments", async () => {
+  const calls = [];
+  const api = {
+    async setMyName(value) { calls.push(["name", value]); },
+    async setMyDescription(value) { calls.push(["description", value]); },
+    async setMyShortDescription(value) { calls.push(["shortDescription", value]); },
+  };
+  await applyTelegramProfile(api, normalizeTelegramProfile({ name: "Кофейня", description: "Меню и заказы", shortDescription: "Открыты ежедневно" }));
+  assert.deepEqual(calls, [
+    ["name", "Кофейня"],
+    ["description", "Меню и заказы"],
+    ["shortDescription", "Открыты ежедневно"],
+  ]);
 });
 
 test("does not turn Telegram profile API failures into silent success", async () => {

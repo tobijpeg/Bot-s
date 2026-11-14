@@ -28,9 +28,12 @@ export function normalizeTelegramProfile(input = {}) {
 }
 
 export async function applyTelegramProfile(api, profile, InputFile) {
-  if (profile.name) await api.setMyName({ name: profile.name });
-  if (profile.description) await api.setMyDescription({ description: profile.description });
-  if (profile.shortDescription) await api.setMyShortDescription({ short_description: profile.shortDescription });
+  // grammY's high-level API methods take the field value as their first argument
+  // and construct the Bot API object internally. Passing an object here nests
+  // the field and makes Telegram display serialized JSON as the profile text.
+  if (profile.name) await api.setMyName(profile.name);
+  if (profile.description) await api.setMyDescription(profile.description);
+  if (profile.shortDescription) await api.setMyShortDescription(profile.shortDescription);
   if (profile.photo) {
     if (typeof InputFile !== "function") throw new TypeError("Telegram file upload is unavailable on this server.");
     await api.setMyProfilePhoto({ type: "static", photo: new InputFile(profile.photo, "bot-profile.jpg") });
