@@ -4,7 +4,7 @@ import { readFileSync, writeFileSync, renameSync, mkdirSync, existsSync, statSyn
 import { dirname, join, resolve, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import { config as loadEnv } from "dotenv";
-import { Bot, InlineKeyboard, InputFile, Keyboard } from "grammy";
+import { API_CONSTANTS, Bot, InlineKeyboard, InputFile, Keyboard } from "grammy";
 import { botLaunchIdFromPath, createDefaultWorkflow, nodeKinds } from "./src/workflow.js";
 import { builderReply, summarizeWorkflowChange } from "./src/ai-safety.js";
 import { applyWorkflowOperations, classifyBuilderMessage, createAllFeatureWorkflow, createBuilderBaseline, detectWorkflowBusinessType, getBuilderGateReply, getWorkflowClarificationQuestions, isAllFeatureRequest, isGeneratedWorkflowRelevant, isWorkflowCreationRequest, normalizeBuilderClarificationQuestions, relevantBusinessDescription, relevantBusinessName, sanitizeBuilderText, shouldAskBuilderClarification } from "./src/workflow-ai.js";
@@ -12,6 +12,7 @@ import { createReadStream } from "node:fs";
 import { createWorkflowRuntime, isValidTelegramChatId } from "./src/workflow-runtime.js";
 import { deliverInboxReply, InboxReplyError } from "./src/inbox-delivery.js";
 import { applyTelegramProfile, normalizeTelegramProfile } from "./src/telegram-profile.js";
+import { catalogWidgetKey, catalogWidgetKeyFromOrder, catalogWidgetState, parseCatalogWidgetOrder } from "./src/telegram-widget.js";
 import { configuredAdminEmails, isConfiguredAdmin } from "./src/admin-access.js";
 
 const root = dirname(fileURLToPath(import.meta.url));
@@ -294,14 +295,14 @@ ${businessName || "не использовать: название пустое 
 function configOf(data, existing = {}) {
   const workflow = Array.isArray(data.workflow?.nodes) && Array.isArray(data.workflow?.edges) ? data.workflow : existing.workflow || createDefaultWorkflow();
   const safeUrl = (value) => { try { const url = new URL(String(value || "")); return url.protocol === "https:" ? url.toString().slice(0, 1000) : ""; } catch { return ""; } };
-  const nodes = workflow.nodes.slice(0, 100).filter((node) => node && typeof node.id === "string" && nodeKinds[node.data?.kind]).map((node) => ({ id: node.id.slice(0, 80), type: "workflow", position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 }, data: { kind: node.data.kind, title: String(node.data.title || nodeKinds[node.data.kind].title).slice(0, 100), text: String(node.data.text || "").slice(0, 1500), buttonLabel: String(node.data.buttonLabel || "").slice(0, 60), keywords: String(node.data.keywords || "").slice(0, 300), url: safeUrl(node.data.url), condition: String(node.data.condition || "").slice(0, 300), delaySeconds: Math.max(0, Math.min(300, Math.floor(Number(node.data.delaySeconds) || 0))) } }));
+  const nodes = workflow.nodes.slice(0, 100).filter((node) => node && typeof node.id === "string" && nodeKinds[node.data?.kind]).map((node) => ({ id: node.id.slice(0, 80), type: "workflow", position: { x: Number(node.position?.x) || 0, y: Number(node.position?.y) || 0 }, data: { kind: node.data.kind, title: String(node.data.title || nodeKinds[node.data.kind].title).slice(0, 100), text: String(node.data.text || "").slice(0, 1500), buttonLabel: String(node.data.buttonLabel || "").slice(0, 60), keywords: String(node.data.keywords || "").slice(0, 300), url: safeUrl(node.data.url), condition: String(node.data.condition || "").slice(0, 300), delaySeconds: Math.max(0, Math.min(300, Math.floor(Number(node.data.delaySeconds) || 0))), widget: node.data.kind === "catalog" && node.data.widget && typeof node.data.widget === "object" ? { enabled: node.data.widget.enabled === true, title: String(node.data.widget.title || "").slice(0, 60), subtitle: String(node.data.widget.subtitle || "").slice(0, 140), accent: ["ocean", "violet", "forest", "graphite"].includes(node.data.widget.accent) ? node.data.widget.accent : "ocean", optionsText: String(node.data.widget.optionsText || "").slice(0, 700) } : undefined } }));
   const ids = new Set(nodes.map((node) => node.id));
   const edges = workflow.edges.slice(0, 200).filter((edge) => ids.has(edge.source) && ids.has(edge.target)).map((edge) => ({ id: String(edge.id || randomBytes(5).toString("hex")).slice(0, 100), source: edge.source, target: edge.target, label: String(edge.label || "").slice(0, 50) }));
   const profileSource = data.telegramProfile ?? existing.telegramProfile;
   const telegramProfile = profileSource && typeof profileSource === "object" ? { name: String(profileSource.name || "").slice(0, 64), description: String(profileSource.description || "").slice(0, 512), shortDescription: String(profileSource.shortDescription || "").slice(0, 120) } : undefined;
   const safeData = { ...data };
   delete safeData.telegramProfile;
-  return { ...existing, ...safeData, ...(telegramProfile ? { telegramProfile } : {}), botName: existing.botName, ownerTelegramId: String(data.ownerTelegramId ?? existing.ownerTelegramId ?? "").replace(/[^0-9-]/g, "").slice(0, 20), businessName: String(data.businessName || "").slice(0, 120), template: String(data.template || "").slice(0, 100), description: String(data.description || "").slice(0, 5000), greeting: String(data.greeting || "").slice(0, 1000), features: Array.isArray(data.features) ? data.features.slice(0, 30).map((item) => String(item).slice(0, 100)) : existing.features || [], items: Array.isArray(data.items) ? data.items.slice(0, 100).map((item) => ({ name: String(item.name || "").slice(0, 200), price: Math.max(0, Number(item.price) || 0) })) : existing.items || [], contacts: { address: String(data.contacts?.address ?? existing.contacts?.address ?? "").slice(0, 300), hours: String(data.contacts?.hours ?? existing.contacts?.hours ?? "").slice(0, 200), phone: String(data.contacts?.phone ?? existing.contacts?.phone ?? "").slice(0, 50), language: String(data.contacts?.language ?? existing.contacts?.language ?? "Русский и казахский").slice(0, 100) }, workflow: { nodes, edges } };
+  return { ...existing, ...safeData, ...(telegramProfile ? { telegramProfile } : {}), botName: existing.botName, ownerTelegramId: String(data.ownerTelegramId ?? existing.ownerTelegramId ?? "").replace(/[^0-9-]/g, "").slice(0, 20), businessName: String(data.businessName || "").slice(0, 120), template: String(data.template || "").slice(0, 100), description: String(data.description || "").slice(0, 5000), greeting: String(data.greeting || "").slice(0, 1000), features: Array.isArray(data.features) ? data.features.slice(0, 30).map((item) => String(item).slice(0, 100)) : existing.features || [], items: Array.isArray(data.items) ? data.items.slice(0, 100).map((item) => ({ name: String(item.name || "").slice(0, 200), price: Math.max(0, Number(item.price) || 0), description: String(item.description || "").slice(0, 160), category: String(item.category || "").slice(0, 24), emoji: String(item.emoji || "🛍️").slice(0, 4) })) : existing.items || [], contacts: { address: String(data.contacts?.address ?? existing.contacts?.address ?? "").slice(0, 300), hours: String(data.contacts?.hours ?? existing.contacts?.hours ?? "").slice(0, 200), phone: String(data.contacts?.phone ?? existing.contacts?.phone ?? "").slice(0, 50), language: String(data.contacts?.language ?? existing.contacts?.language ?? "Русский и казахский").slice(0, 100) }, workflow: { nodes, edges } };
 }
 
 const conversationState = new Map();
@@ -327,8 +328,45 @@ async function executeFlow(bot, ctx, record, startId, depth = 0) {
 
 async function startBot(record) {
   if (running.has(record.id)) return;
-  const bot = new Bot(decrypt(record.encryptedToken));
+  const token = decrypt(record.encryptedToken);
+  const bot = new Bot(token);
   const config = record.config || {};
+  bot.use(async (ctx, next) => {
+    const query = ctx.update.widget_query;
+    if (!query) return next();
+    let responseData = "Заявка принята, сохраняю…";
+    let answered = false;
+    try {
+      const chatId = query.chat?.id;
+      const messageId = query.message_id;
+      if (!chatId || !messageId || query.chat?.type !== "private") throw new Error("Виджет заказов работает только в личном чате с ботом.");
+      const key = catalogWidgetKeyFromOrder(query.data);
+      const catalogNode = (config.workflow?.nodes || []).find((node) => node.data.kind === "catalog" && node.data.widget?.enabled && catalogWidgetKey(node.id, config.items, node.data.widget) === key);
+      if (!catalogNode) throw new Error("Виджет каталога выключен в настройках сценария.");
+      const order = parseCatalogWidgetOrder(query.data, config.items, catalogNode.data.widget, catalogNode.id);
+      if (!order) throw new Error("Не удалось проверить состав заказа. Обновите виджет и попробуйте ещё раз.");
+      // Widget queries expire after 15 seconds, so acknowledge the tap before database work.
+      await ctx.api.raw.answerWidgetQuery({ widget_query_id: query.id, data: responseData });
+      answered = true;
+      const inboxMessage = await saveInboxMessage(record, { chat: query.chat, from: query.from, message: { message_id: messageId } }, { kind: "text", text: order.summary });
+      if (!inboxMessage?.id) throw new Error("Не получилось сохранить заказ во входящих.");
+      const ownerId = isValidTelegramChatId(config.ownerTelegramId) ? String(config.ownerTelegramId) : "";
+      if (ownerId) {
+        try { await ctx.api.sendMessage(ownerId, `Новый заказ из @${record.username || "бота"}.\nОт: ${query.from?.first_name || "Пользователь"}${query.from?.username ? ` (@${query.from.username})` : ""}\nID: ${chatId}\n\n${order.summary}`); }
+        catch (error) { console.error(`Could not notify owner about widget order (${record.username || record.id}):`, error.message); }
+      }
+      await ctx.api.raw.editMessageWidgetData({ chat_id: chatId, message_id: messageId, chat_data: catalogWidgetState("Заказ передан кофейне") });
+      return;
+    } catch (error) {
+      console.error(`Could not process catalog widget order (${record.username || record.id}):`, error.message);
+      try {
+        if (query.chat?.id && query.message_id) await ctx.api.raw.editMessageWidgetData({ chat_id: query.chat.id, message_id: query.message_id, chat_data: JSON.stringify({ submitted: false, text: "Не удалось отправить заказ. Попробуйте ещё раз." }) });
+      } catch (editError) { console.error(`Could not update catalog widget state (${record.username || record.id}):`, editError.message); }
+      if (answered) return;
+      try { await ctx.api.raw.answerWidgetQuery({ widget_query_id: query.id, data: error.message.slice(0, 180) }); }
+      catch (answerError) { console.error(`Could not answer catalog widget query (${record.username || record.id}):`, answerError.message); }
+    }
+  });
   bot.command("start", async (ctx) => {
     clearConversationState(workflowStateKey(bot, ctx.chat.id));
     const workflow = config.workflow || createDefaultWorkflow();
@@ -438,7 +476,7 @@ async function startBot(record) {
   let resolveReady;
   let rejectReady;
   const ready = new Promise((resolvePromise, rejectPromise) => { resolveReady = resolvePromise; rejectReady = rejectPromise; });
-  const loop = bot.start({ onStart: () => { console.log(`Telegram bot @${record.username} is running`); resolveReady(); } });
+  const loop = bot.start({ allowed_updates: [...API_CONSTANTS.DEFAULT_UPDATE_TYPES, "widget_query"], onStart: () => { console.log(`Telegram bot @${record.username} is running`); resolveReady(); } });
   running.set(record.id, { bot, loop });
   loop.catch((error) => {
     rejectReady(error);

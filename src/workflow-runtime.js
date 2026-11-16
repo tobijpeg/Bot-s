@@ -1,4 +1,5 @@
 import { createDefaultWorkflow } from "./workflow.js";
+import { buildCatalogWidgetHtml } from "./telegram-widget.js";
 
 const MAX_FLOW_DEPTH = 15;
 const MAX_CHOICES = 8;
@@ -91,7 +92,17 @@ export function createWorkflowRuntime({ InlineKeyboard, Keyboard, setConversatio
         break;
       case "catalog": {
         const lines = formattedCatalog(config.items);
-        await replyLongText(ctx, lines.length ? lines.join("\n") : (current.data.text || "Каталог пока не заполнен. Владелец может добавить товары или услуги в настройках бота."));
+        if (current.data.widget?.enabled && ctx.chat?.type === "private" && ctx.api?.raw?.sendWidget && (config.items || []).length) {
+          try {
+            const html = buildCatalogWidgetHtml(config.items, current.data.widget, current.id);
+            await ctx.api.raw.sendWidget({ chat_id: ctx.chat.id, html, caption: current.data.widget.subtitle || current.data.text || "Откройте каталог и настройте заказ.", allow_queries: true, chat_data: "{}" });
+          } catch (error) {
+            console.error?.(`Could not send catalog widget (${record.username || record.id}):`, error.message);
+            await replyLongText(ctx, lines.length ? lines.join("\n") : (current.data.text || "Каталог пока не заполнен. Владелец может добавить товары или услуги в настройках бота."));
+          }
+        } else {
+          await replyLongText(ctx, lines.length ? lines.join("\n") : (current.data.text || "Каталог пока не заполнен. Владелец может добавить товары или услуги в настройках бота."));
+        }
         await goToSingleNext();
         break;
       }

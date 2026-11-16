@@ -82,6 +82,26 @@ test("catalog content is formatted, split safely, and falls back to configured t
   assert.ok(sent.every((item) => item.text.length <= 4000));
 });
 
+test("catalog can send an interactive Telegram widget in private chats and keeps text fallback elsewhere", async () => {
+  const { runtime, sent, ctx, record } = harness();
+  record.config.items = [{ name: "Американо", price: 1200, category: "Кофе", emoji: "☕" }];
+  record.config.workflow.nodes = [node("catalog", "catalog", { widget: { enabled: true, title: "Кофейня", accent: "ocean", optionsText: "Размер: S (+0 ₸), M (+200 ₸)" } })];
+  const widgets = [];
+  ctx.chat.type = "private";
+  ctx.api.raw = { async sendWidget(payload) { widgets.push(payload); } };
+  await runtime.executeFlow(ctx, record, "catalog");
+  assert.equal(widgets.length, 1);
+  assert.equal(widgets[0].chat_id, ctx.chat.id);
+  assert.equal(widgets[0].allow_queries, true);
+  assert.match(widgets[0].html, /Американо/);
+  assert.equal(sent.length, 0);
+
+  ctx.chat.type = "group";
+  await runtime.executeFlow(ctx, record, "catalog");
+  assert.equal(widgets.length, 1);
+  assert.match(sent.at(-1).text, /Американо/);
+});
+
 test("contacts, fallback and long messages always produce a Telegram-safe response", async () => {
   const { runtime, sent, ctx, record } = harness();
   record.config.workflow.nodes = [node("contacts", "contacts")];

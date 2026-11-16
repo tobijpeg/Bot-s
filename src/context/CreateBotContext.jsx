@@ -75,7 +75,7 @@ export function CreateBotProvider({ children }) {
     setWorkflowPlan: (plan) => setState((prev) => ({ ...prev, greeting: plan.greeting || prev.greeting, features: plan.features || prev.features, aiPlan: plan })),
     updateItem: (index, field, value) => setState((prev) => ({ ...prev, items: prev.items.map((item, i) => i === index ? { ...item, [field]: value } : item) })),
     removeItem: (index) => setState((prev) => ({ ...prev, items: prev.items.filter((_, i) => i !== index) })),
-    addItem: () => setState((prev) => ({ ...prev, items: [...prev.items, { name: "Новый товар или услуга", price: 0 }] })),
+    addItem: () => setState((prev) => ({ ...prev, items: [...prev.items, { name: "Новый товар или услуга", price: 0, category: "", description: "", emoji: "🛍️" }] })),
     chooseTemplate: (category) => { const template = templates[category]; setState((prev) => ({ ...prev, category, description: template.description, features: template.features, items: template.items, greeting: template.greeting, workflow: createDefaultWorkflow(), aiPlan: null, status: "Черновик" })); },
     chooseCustom: () => setState((prev) => ({ ...prev, category: "custom", features: [], items: [], greeting: "Здравствуйте! Добро пожаловать. Выберите действие, чтобы продолжить.", workflow: createDefaultWorkflow(), aiPlan: null, status: "Черновик" })),
     setState,
