@@ -70,8 +70,17 @@ export default function Sidebar() {
           >
             <span>{t(link.label)}</span>
             {link.to === "/inbox" && unreadCount > 0 && <span className="ml-auto min-w-5 rounded-full bg-violet-600 px-1.5 py-0.5 text-center text-[10px] font-bold text-white">{unreadCount > 99 ? "99+" : unreadCount}</span>}
-          </NavLink>
+                    </NavLink>
         ))}
+        <a
+          href={`${import.meta.env.BASE_URL}guide.pdf`}
+          target="_blank"
+          rel="noopener noreferrer"
+          className="flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 hover:text-navy-950"
+        >
+          <span>📘</span>
+          <span>{t("Инструкция (PDF)")}</span>
+        </a>
       </nav>
     </aside>
   );
