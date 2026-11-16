@@ -78,7 +78,7 @@ export default function Sidebar() {
           rel="noopener noreferrer"
           className="flex shrink-0 items-center gap-2 rounded-xl px-3 py-2.5 text-sm font-medium text-gray-600 transition-colors hover:bg-gray-50 hover:text-navy-950"
         >
-          <span>📘</span>
+          <span></span>
           <span>{t("Инструкция (PDF)")}</span>
         </a>
       </nav>
